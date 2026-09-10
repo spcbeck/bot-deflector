@@ -6,6 +6,7 @@ A Manifest V3 browser extension built with TypeScript and Bauhaus modernist desi
 
 ## Features & Detection Engine
 
+* **Personal Account Auto-Blocking:** Automatically blocks detected bot accounts on your personal Reddit profile (`/api/block_user`) using active session cookies, with graceful quota management.
 * **Stealth Deflection:** High-scoring bot comments are automatically collapsed from view and replaced with a crisp 1-line Bauhaus reveal strip.
 * **Archival Repost Search:** Detects viral submissions recycled from months/years ago using Reddit's search API.
 * **Accomplice Comment Hijacking:** Catches bot syndicates that copy top comments from the original viral thread and paste them into new threads (including nested replies).

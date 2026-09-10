@@ -1,5 +1,6 @@
 import { scoreUser } from '../engine/scorer';
 import { BackgroundMessage, ScoredUser } from '../types';
+import { blockRedditUser } from './blocker';
 import {
   getCachedUser,
   getSettings,
@@ -89,6 +90,17 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
             }
           );
 
+          // If user is deflected and auto-block is enabled, block them on Reddit
+          if (scored.classification === 'DEFLECT' && settings.autoBlockReddit && !scored.isBlockedOnReddit) {
+            const blockRes = await blockRedditUser(username);
+            if (blockRes.success) {
+              scored.isBlockedOnReddit = true;
+              await incrementStats({ blocked: 1 });
+            } else if (blockRes.quotaExceeded) {
+              await incrementStats({ quotaExceeded: true });
+            }
+          }
+
           await setCachedUser(scored);
           await incrementStats({
             scanned: 1,
@@ -166,6 +178,21 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
 
     case 'UPDATE_SETTINGS':
       return await updateSettings(message.settings);
+
+    case 'BLOCK_USER': {
+      const blockRes = await blockRedditUser(message.username);
+      if (blockRes.success) {
+        await incrementStats({ blocked: 1 });
+        const cached = await getCachedUser(message.username);
+        if (cached) {
+          cached.isBlockedOnReddit = true;
+          await setCachedUser(cached);
+        }
+      } else if (blockRes.quotaExceeded) {
+        await incrementStats({ quotaExceeded: true });
+      }
+      return blockRes;
+    }
 
     case 'GET_STATS':
       return await getStats();

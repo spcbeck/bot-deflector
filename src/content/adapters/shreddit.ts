@@ -75,6 +75,9 @@ export class ShredditAdapter implements RedditAdapter {
       },
       () => {
         chrome.runtime.sendMessage({ type: 'ADD_WHITELIST', username: scored.username });
+      },
+      () => {
+        chrome.runtime.sendMessage({ type: 'BLOCK_USER', username: scored.username });
       }
     );
 

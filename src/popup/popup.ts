@@ -2,12 +2,15 @@ import { BackgroundMessage, BackgroundResponse, DeflectorStats, ExtensionSetting
 
 document.addEventListener('DOMContentLoaded', async () => {
   const deflectedEl = document.getElementById('stat-deflected');
+  const blockedEl = document.getElementById('stat-blocked');
   const scannedEl = document.getElementById('stat-scanned');
   const cacheEl = document.getElementById('stat-cache');
+  const quotaWarning = document.getElementById('quota-warning');
 
   const modeButtons = document.querySelectorAll<HTMLButtonElement>('.bd-segment-btn');
   const slider = document.getElementById('threshold-slider') as HTMLInputElement;
   const sliderVal = document.getElementById('threshold-val');
+  const toggleBlock = document.getElementById('toggle-block') as HTMLInputElement;
   const toggleRepost = document.getElementById('toggle-repost') as HTMLInputElement;
   const toggleCadence = document.getElementById('toggle-cadence') as HTMLInputElement;
 
@@ -22,8 +25,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     if (statsRes?.success && statsRes.data) {
       if (deflectedEl) deflectedEl.textContent = String(statsRes.data.deflectedCount);
+      if (blockedEl) blockedEl.textContent = String(statsRes.data.blockedCount);
       if (scannedEl) scannedEl.textContent = String(statsRes.data.scannedCount);
       if (cacheEl) cacheEl.textContent = String(statsRes.data.cacheHitCount);
+      if (quotaWarning && statsRes.data.quotaExceeded) {
+        quotaWarning.style.display = 'flex';
+      }
     }
   } catch (err) {
     console.warn('[BotDeflector Popup] Could not load stats:', err);
@@ -60,6 +67,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Checkboxes
+    if (toggleBlock) toggleBlock.checked = settings.autoBlockReddit;
     if (toggleRepost) toggleRepost.checked = settings.enableSubmissionCheck;
     if (toggleCadence) toggleCadence.checked = settings.enableCadenceCheck;
 
@@ -136,6 +144,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Toggle Listeners
+  toggleBlock?.addEventListener('change', async () => {
+    await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<ExtensionSettings>>({
+      type: 'UPDATE_SETTINGS',
+      settings: { autoBlockReddit: toggleBlock.checked }
+    });
+  });
+
   toggleRepost?.addEventListener('change', async () => {
     await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<ExtensionSettings>>({
       type: 'UPDATE_SETTINGS',

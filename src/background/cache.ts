@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   mode: 'STEALTH_COLLAPSE',
   enableSubmissionCheck: true,
   enableCadenceCheck: true,
+  autoBlockReddit: true,
   whitelist: []
 };
 
@@ -18,6 +19,8 @@ export const DEFAULT_STATS: DeflectorStats = {
   deflectedCount: 0,
   scannedCount: 0,
   cacheHitCount: 0,
+  blockedCount: 0,
+  quotaExceeded: false,
   lastActive: Date.now()
 };
 
@@ -61,12 +64,20 @@ export async function getStats(): Promise<DeflectorStats> {
   return { ...DEFAULT_STATS, ...(res[STATS_KEY] as DeflectorStats | undefined) };
 }
 
-export async function incrementStats(updates: { deflected?: number; scanned?: number; cacheHits?: number }): Promise<DeflectorStats> {
+export async function incrementStats(updates: {
+  deflected?: number;
+  scanned?: number;
+  cacheHits?: number;
+  blocked?: number;
+  quotaExceeded?: boolean;
+}): Promise<DeflectorStats> {
   const current = await getStats();
   const next: DeflectorStats = {
     deflectedCount: current.deflectedCount + (updates.deflected || 0),
     scannedCount: current.scannedCount + (updates.scanned || 0),
     cacheHitCount: current.cacheHitCount + (updates.cacheHits || 0),
+    blockedCount: current.blockedCount + (updates.blocked || 0),
+    quotaExceeded: updates.quotaExceeded !== undefined ? updates.quotaExceeded : current.quotaExceeded,
     lastActive: Date.now()
   };
   await chrome.storage.local.set({ [STATS_KEY]: next });

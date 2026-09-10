@@ -23,6 +23,7 @@ Deflect bot swarms, karma-farming repost rings, and comment hijackers on Reddit 
 BotDeflector is a privacy-first browser extension that analyzes comment threads and submissions on Reddit in real time. It evaluates accounts against a multi-layered heuristic threat matrix, instantly collapsing detected spam and bot accounts into a minimal, non-intrusive Bauhaus deflection bar with a one-click reveal option.
 
 KEY FEATURES:
+• Personal Account Auto-Blocking: Optionally blocks detected bot accounts directly on your personal Reddit profile (/api/block_user) so you never see their posts, comments, or DMs anywhere on the platform.
 • Stealth Deflection: Detected bot comments are automatically collapsed from view so you can enjoy organic discussion without distraction.
 • Repost Farm Detection: Automatically detects recycled viral submissions scraped from years ago using lightweight archival checks.
 • Accomplice Comment Hijacking Defense: Flags bots that copy-paste top comments from original threads onto reposts to siphon karma.

@@ -26,15 +26,25 @@
         <span class="bd-metric-label">DEFLECTED</span>
         <span class="bd-metric-value" id="stat-deflected">0</span>
       </div>
+      <div class="bd-metric-card bd-card-red-dark">
+        <span class="bd-metric-label">BLOCKED</span>
+        <span class="bd-metric-value" id="stat-blocked">0</span>
+      </div>
       <div class="bd-metric-card bd-card-blue">
         <span class="bd-metric-label">SCANNED</span>
         <span class="bd-metric-value" id="stat-scanned">0</span>
       </div>
       <div class="bd-metric-card bd-card-neutral">
-        <span class="bd-metric-label">CACHE HITS</span>
+        <span class="bd-metric-label">CACHE</span>
         <span class="bd-metric-value" id="stat-cache">0</span>
       </div>
     </section>
+
+    <!-- Quota Alert Banner -->
+    <div class="bd-quota-banner" id="quota-warning" style="display: none;">
+      <span>!</span>
+      <span>Reddit 1,000 block quota reached. Falling back to local deflection.</span>
+    </div>
 
     <!-- Controls & Heuristic Configuration -->
     <section class="bd-control-panel">
@@ -65,6 +75,11 @@
       <div class="bd-control-group">
         <label class="bd-group-label">ACTIVE HEURISTIC LAYERS</label>
         <div class="bd-checkbox-list">
+          <label class="bd-checkbox-row">
+            <input type="checkbox" id="toggle-block" checked />
+            <span class="bd-checkbox-box bd-box-red"></span>
+            <span class="bd-checkbox-text"><strong>Auto-Block on Reddit</strong> (Native Profile API)</span>
+          </label>
           <label class="bd-checkbox-row">
             <input type="checkbox" id="toggle-repost" checked />
             <span class="bd-checkbox-box"></span>

@@ -3,7 +3,8 @@ import { RedditSubmission, ScoredUser } from '../types';
 export function createDeflectionBar(
   scored: ScoredUser,
   onRestore: () => void,
-  onWhitelist: () => void
+  onWhitelist: () => void,
+  onBlock?: () => void
 ): HTMLElement {
   const container = document.createElement('div');
   container.className = 'bd-deflection-bar';
@@ -15,9 +16,20 @@ export function createDeflectionBar(
   badge.className = scored.classification === 'DEFLECT' ? 'bd-badge-red' : 'bd-badge-yellow';
   badge.textContent = `${scored.classification} (${scored.score}PTS)`;
 
+  meta.appendChild(badge);
+
+  if (scored.isBlockedOnReddit) {
+    const blockedBadge = document.createElement('span');
+    blockedBadge.className = 'bd-badge-red';
+    blockedBadge.style.backgroundColor = '#B71C1C';
+    blockedBadge.textContent = 'BLOCKED ON REDDIT';
+    meta.appendChild(blockedBadge);
+  }
+
   const user = document.createElement('span');
   user.className = 'bd-user-label';
   user.textContent = `u/${scored.username}`;
+  meta.appendChild(user);
 
   const reason = document.createElement('span');
   reason.className = 'bd-reason-text';
@@ -27,15 +39,32 @@ export function createDeflectionBar(
     .slice(0, 2)
     .map((b) => b.name)
     .join(' • ');
-  reason.textContent = topReasons ? `[ ${topReasons} ]` : '';
-
-  meta.appendChild(badge);
-  meta.appendChild(user);
-  if (topReasons) meta.appendChild(reason);
+  if (topReasons) {
+    reason.textContent = `[ ${topReasons} ]`;
+    meta.appendChild(reason);
+  }
 
   const actions = document.createElement('div');
   actions.style.display = 'flex';
   actions.style.gap = '6px';
+
+  // If not blocked on Reddit, offer 1-click Block on Reddit
+  if (!scored.isBlockedOnReddit && onBlock) {
+    const blockBtn = document.createElement('button');
+    blockBtn.className = 'bd-action-btn';
+    blockBtn.style.color = '#FF8A80';
+    blockBtn.textContent = 'Block on Reddit';
+    blockBtn.title = 'Permanently block this user on your Reddit account';
+    blockBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      blockBtn.textContent = 'Blocking...';
+      blockBtn.disabled = true;
+      onBlock();
+      blockBtn.textContent = 'Blocked';
+      blockBtn.style.color = '#AAAAAA';
+    });
+    actions.appendChild(blockBtn);
+  }
 
   const revealBtn = document.createElement('button');
   revealBtn.className = 'bd-action-btn';

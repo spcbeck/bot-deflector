@@ -60,6 +60,7 @@ export interface ScoredUser {
   breakdown: ThreatRuleHit[];
   evaluatedAt: number;
   profile?: RedditProfileData;
+  isBlockedOnReddit?: boolean;
 }
 
 export type DeflectionMode = 'STEALTH_COLLAPSE' | 'AUDIT_TAG';
@@ -70,6 +71,7 @@ export interface ExtensionSettings {
   mode: DeflectionMode; // default 'STEALTH_COLLAPSE'
   enableSubmissionCheck: boolean;
   enableCadenceCheck: boolean;
+  autoBlockReddit: boolean; // default false / user configurable
   whitelist: string[];
 }
 
@@ -77,6 +79,8 @@ export interface DeflectorStats {
   deflectedCount: number;
   scannedCount: number;
   cacheHitCount: number;
+  blockedCount: number;
+  quotaExceeded?: boolean;
   lastActive: number;
 }
 
@@ -85,6 +89,7 @@ export type BackgroundMessage =
   | { type: 'CHECK_USERS'; usernames: string[] }
   | { type: 'CHECK_SUBMISSION'; title: string; subreddit: string; author: string }
   | { type: 'CHECK_HISTORICAL_COMMENTS'; originalPostId: string; currentComments: { id: string; body: string }[] }
+  | { type: 'BLOCK_USER'; username: string }
   | { type: 'GET_SETTINGS' }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<ExtensionSettings> }
   | { type: 'GET_STATS' }
