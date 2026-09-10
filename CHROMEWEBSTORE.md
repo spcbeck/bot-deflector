@@ -84,11 +84,13 @@ In the Developer Dashboard's **Privacy Practices** tab:
 
 ## 6. Pre-Submission Packaging Checklist
 
-To create the release `.zip` for upload:
+To create the verified release `.zip` for upload:
 
-1. Run `npm run build`
-2. Compress the contents of `dist/` (NOT the root project folder) into `bot-deflector-v1.0.0.zip`:
+1. Run:
    ```bash
-   cd dist && zip -r ../bot-deflector-v1.0.0.zip . && cd ..
+   npm run package
    ```
+2. The script runs type checking, builds the extension, validates that all required files and icons are present, and compresses the contents of `dist/` directly into:
+   * `bot-deflector-v1.0.0.zip`
+   * `bot-deflector.zip`
 3. Upload `bot-deflector-v1.0.0.zip` to the [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole).

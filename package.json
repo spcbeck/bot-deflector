@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node scripts/build.js",
+    "build:userscript": "node scripts/build-userscript.js",
+    "build:all": "npm run build && npm run build:userscript",
+    "package": "npm run build && npm run build:userscript && node scripts/package.js",
     "dev": "node scripts/build.js",
     "test": "node --import tsx --test src/**/*.test.ts",
     "generate-icons": "node scripts/generate-icons.js"

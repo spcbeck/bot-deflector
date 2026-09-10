@@ -1,4 +1,4 @@
-import { Classification, RedditCommentActivity, RedditProfileData, ScoredUser, ThreatRuleHit } from '../types';
+import { Classification, ConfidenceTier, RedditCommentActivity, RedditProfileData, ScoredUser, ThreatRuleHit } from '../types';
 import {
   evaluateAccountAge,
   evaluateAutoUsername,
@@ -24,6 +24,43 @@ export interface ScoreEvaluationOptions {
   flagThreshold?: number;
   isAccompliceHijacker?: boolean;
   isExactTitleRepost?: boolean;
+}
+
+export function calculateConfidenceTier(
+  profile?: RedditProfileData,
+  breakdown: ThreatRuleHit[] = [],
+  isWhitelisted = false,
+  isMod = false
+): ConfidenceTier {
+  if (isWhitelisted || isMod) {
+    return 1;
+  }
+
+  const hasSafeHarbor = breakdown.some((h) => h.category === 'safe_harbor');
+
+  if (profile) {
+    const ageDays = (Date.now() / 1000 - profile.createdUtc) / 86400;
+
+    // Tier 1: Ironclad Human (Age >= 3 years with >= 2k karma, or age >= 1 year with >= 10k karma, or safe harbor with >= 1 year and >= 2k karma)
+    if (
+      (ageDays >= 3 * 365 && profile.totalKarma >= 2000) ||
+      (ageDays >= 365 && profile.totalKarma >= 10000) ||
+      (hasSafeHarbor && ageDays >= 365 && profile.totalKarma >= 2000)
+    ) {
+      return 1;
+    }
+
+    // Tier 2: Standard Human (Age >= 180 days with >= 100 karma, or age >= 60 days with >= 500 karma)
+    if (
+      (ageDays >= 180 && profile.totalKarma >= 100) ||
+      (ageDays >= 60 && profile.totalKarma >= 500)
+    ) {
+      return 2;
+    }
+  }
+
+  // Tier 3: Borderline / Young or unknown profile
+  return 3;
 }
 
 export function scoreUser(
@@ -54,7 +91,8 @@ export function scoreUser(
         }
       ],
       evaluatedAt: Date.now(),
-      profile
+      profile,
+      confidenceTier: 1
     };
   }
 
@@ -74,7 +112,8 @@ export function scoreUser(
         }
       ],
       evaluatedAt: Date.now(),
-      profile
+      profile,
+      confidenceTier: 1
     };
   }
 
@@ -184,12 +223,18 @@ export function scoreUser(
     classification = 'FLAG';
   }
 
+  const confidenceTier =
+    classification === 'CLEAN'
+      ? calculateConfidenceTier(profile, breakdown, false, Boolean(options.isMod || profile?.isMod))
+      : undefined;
+
   return {
     username,
     score: normalizedScore,
     classification,
     breakdown,
     evaluatedAt: Date.now(),
-    profile
+    profile,
+    confidenceTier
   };
 }

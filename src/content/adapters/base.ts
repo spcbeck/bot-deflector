@@ -23,7 +23,9 @@ export interface RedditAdapter {
   collapseComment(
     comment: RedditCommentElement,
     scored: ScoredUser,
-    onRestore: () => void
+    onRestore: () => void,
+    onWhitelist?: () => void,
+    onBlock?: () => void
   ): void;
   injectSubmissionWarning(
     submission: RedditSubmissionInfo,

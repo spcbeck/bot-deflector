@@ -62,7 +62,9 @@ export class OldRedditAdapter implements RedditAdapter {
   collapseComment(
     comment: RedditCommentElement,
     scored: ScoredUser,
-    onRestore: () => void
+    onRestore: () => void,
+    onWhitelist?: () => void,
+    onBlock?: () => void
   ): void {
     const el = comment.element;
     el.dataset.bdProcessed = 'true';
@@ -80,12 +82,8 @@ export class OldRedditAdapter implements RedditAdapter {
         el.dataset.bdDeflected = 'false';
         onRestore();
       },
-      () => {
-        chrome.runtime.sendMessage({ type: 'ADD_WHITELIST', username: scored.username });
-      },
-      () => {
-        chrome.runtime.sendMessage({ type: 'BLOCK_USER', username: scored.username });
-      }
+      onWhitelist || (() => {}),
+      onBlock
     );
 
     el.prepend(bar);

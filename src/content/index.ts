@@ -1,16 +1,22 @@
-import { BackgroundMessage, BackgroundResponse, ExtensionSettings, ScoredUser } from '../types';
+import { DeflectorClient, ExtensionBackendClient } from '../core/client';
+import { ExtensionSettings, ScoredUser } from '../types';
 import { RedditAdapter, RedditCommentElement } from './adapters/base';
 import { OldRedditAdapter } from './adapters/oldReddit';
 import { ShredditAdapter } from './adapters/shreddit';
 import { ViewportPrioritizer } from './viewport';
 
-class ContentOrchestrator {
+export class ContentOrchestrator {
+  private client: DeflectorClient;
   private adapter: RedditAdapter | null = null;
   private viewport = new ViewportPrioritizer();
   private historicalTopComments: string[] = [];
   private processedCommentIds = new Set<string>();
   private activeSettings: ExtensionSettings | null = null;
   private isScanning = false;
+
+  constructor(client: DeflectorClient = new ExtensionBackendClient()) {
+    this.client = client;
+  }
 
   async init(): Promise<void> {
     // Select active adapter
@@ -53,14 +59,9 @@ class ContentOrchestrator {
 
   private async refreshSettings(): Promise<void> {
     try {
-      const res = await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<ExtensionSettings>>({
-        type: 'GET_SETTINGS'
-      });
-      if (res?.success) {
-        this.activeSettings = res.data;
-      }
+      this.activeSettings = await this.client.getSettings();
     } catch {
-      // Background worker might be idle
+      // Backend client might be idle or uninitialized
     }
   }
 
@@ -70,16 +71,25 @@ class ContentOrchestrator {
     if (!sub) return;
 
     try {
-      const res = await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<any>>({
-        type: 'CHECK_SUBMISSION',
+      const res = await this.client.checkSubmission({
         title: sub.title,
         subreddit: sub.subreddit,
         author: sub.author
       });
 
-      if (res?.success && res.data?.isRepost && res.data?.originalPost) {
-        this.historicalTopComments = res.data.historicalComments || [];
-        this.adapter.injectSubmissionWarning(sub, res.data.originalPost, res.data.opScored);
+      if (res?.isRepost && res?.originalPost) {
+        this.historicalTopComments = res.historicalComments || [];
+        this.adapter.injectSubmissionWarning(
+          sub,
+          res.originalPost,
+          res.opScored || {
+            username: sub.author,
+            score: 85,
+            classification: 'DEFLECT',
+            breakdown: [],
+            evaluatedAt: Date.now()
+          }
+        );
       }
     } catch (err) {
       console.warn('[BotDeflector] Submission check error:', err);
@@ -130,36 +140,41 @@ class ContentOrchestrator {
             ],
             evaluatedAt: Date.now()
           };
-          this.adapter.collapseComment(c, syntheticScored, () => {});
+          this.adapter.collapseComment(
+            c,
+            syntheticScored,
+            () => {},
+            () => this.client.addWhitelist(syntheticScored.username),
+            () => this.client.blockUser(syntheticScored.username)
+          );
         } else {
           remainingComments.push(c);
         }
       }
 
-      // Batch query usernames to background worker
+      // Batch query usernames to backend
       const usernames = Array.from(new Set(remainingComments.map((c) => c.author)));
       if (usernames.length === 0) {
         this.isScanning = false;
         return;
       }
 
-      const res = await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<Record<string, ScoredUser>>>({
-        type: 'CHECK_USERS',
-        usernames
-      });
+      const scoredMap = await this.client.checkUsers(usernames);
 
-      if (res?.success && res.data) {
-        const scoredMap = res.data;
+      for (const c of remainingComments) {
+        const scored = scoredMap[c.author.toLowerCase().replace(/^u\//, '')];
+        if (!scored) continue;
 
-        for (const c of remainingComments) {
-          const scored = scoredMap[c.author.toLowerCase().replace(/^u\//, '')];
-          if (!scored) continue;
-
-          if (scored.classification === 'DEFLECT') {
-            this.adapter.collapseComment(c, scored, () => {});
-          } else if (scored.classification === 'FLAG' && this.activeSettings?.mode === 'AUDIT_TAG') {
-            c.element.style.borderLeft = '3px solid #FBC02D';
-          }
+        if (scored.classification === 'DEFLECT') {
+          this.adapter.collapseComment(
+            c,
+            scored,
+            () => {},
+            () => this.client.addWhitelist(scored.username),
+            () => this.client.blockUser(scored.username)
+          );
+        } else if (scored.classification === 'FLAG' && this.activeSettings?.mode === 'AUDIT_TAG') {
+          c.element.style.borderLeft = '3px solid #FBC02D';
         }
       }
     } finally {
@@ -182,10 +197,12 @@ class ContentOrchestrator {
   }
 }
 
-// Auto-boot on Reddit pages
-const orchestrator = new ContentOrchestrator();
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => orchestrator.init());
-} else {
-  orchestrator.init();
+// Auto-boot in browser extension context
+if (typeof chrome !== 'undefined' && typeof chrome.runtime?.sendMessage === 'function') {
+  const orchestrator = new ContentOrchestrator(new ExtensionBackendClient());
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => orchestrator.init());
+  } else {
+    orchestrator.init();
+  }
 }

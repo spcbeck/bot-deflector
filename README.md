@@ -26,31 +26,64 @@ This is my first, basic attempt at fighting back, I guess I can start with Reddi
 
 ---
 
-## Development & Installation
+## ⚡ Installation & Quick Start
+
+Choose the easiest method for your browser setup:
+
+### Method 1: 1-Click Userscript (Fastest — All Browsers & Mobile)
+If you use **Tampermonkey**, **Violentmonkey**, **Greasemonkey**, or **Userscripts** (Safari macOS/iOS, Firefox Mobile, Orion, Kiwi):
+1. Make sure you have a userscript manager installed in your browser.
+2. Click this direct installation link:
+   👉 **[Install BotDeflector Userscript](https://raw.githubusercontent.com/spcbeck/bot-deflector/main/bot-deflector.user.js)**
+3. Confirm **Install** in your userscript extension prompt. Done!
+
+### Method 2: Pre-Built Extension ZIP (No Node/Git Required)
+For **Google Chrome**, **Brave**, **Arc**, **Microsoft Edge**, and **Opera**:
+1. Download the latest **`bot-deflector-v1.0.0.zip`** from [GitHub Releases](https://github.com/spcbeck/bot-deflector/releases).
+2. Unzip the downloaded file into a folder on your computer.
+3. Open your browser and navigate to `chrome://extensions/` (or `brave://extensions/`, `edge://extensions/`).
+4. Toggle **Developer mode** on (top right corner).
+5. Click **Load unpacked** and select the unzipped folder.
+6. Browse Reddit! The extension will automatically deflect detected bots.
+
+### Method 3: Official Chrome Web Store
+* Ready for one-click installation once published to the Chrome Web Store.
+* See [CHROMEWEBSTORE.md](./CHROMEWEBSTORE.md) for full developer store metadata, permissions justifications, and submission instructions.
+
+---
+
+## Development & Building from Source
+
+If you want to contribute or build from source:
 
 ### 1. Install Dependencies
 ```bash
 npm install
 ```
 
-### 2. Run Test Suite
+### 2. Run Heuristic Test Suite
 Runs the 9 unit test suites covering the heuristic threat matrix:
 ```bash
 npm test
 ```
 
-### 3. Build Extension
-Builds the Manifest V3 bundle into the `dist/` directory:
+### 3. Build Everything
+Builds both the browser extension (`dist/`) and the standalone userscript (`dist/bot-deflector.user.js`):
 ```bash
-npm run build
+npm run build:all
 ```
 
-### 4. Load into Google Chrome
+### 4. Create Distribution Package
+Generates a verified, production-ready `bot-deflector-v1.0.0.zip` ready for store submission or release upload:
+```bash
+npm run package
+```
+
+### 5. Load into Google Chrome
 1. Open Google Chrome and navigate to `chrome://extensions/`.
 2. Enable **Developer mode** via the toggle switch in the top right corner.
 3. Click **Load unpacked**.
 4. Select the `dist/` folder inside this repository.
-5. Browse to any Reddit thread on `reddit.com` or `old.reddit.com`.
 
 ---
 

@@ -53,6 +53,15 @@ export interface RedditSubmission {
 
 export type Classification = 'DEFLECT' | 'FLAG' | 'CLEAN';
 
+export type ConfidenceTier = 1 | 2 | 3;
+
+export interface CompactCleanRecord {
+  username: string;
+  evaluatedAt: number;
+  tier: ConfidenceTier;
+  score: number;
+}
+
 export interface ScoredUser {
   username: string;
   score: number;
@@ -61,6 +70,7 @@ export interface ScoredUser {
   evaluatedAt: number;
   profile?: RedditProfileData;
   isBlockedOnReddit?: boolean;
+  confidenceTier?: ConfidenceTier;
 }
 
 export type DeflectionMode = 'STEALTH_COLLAPSE' | 'AUDIT_TAG';
@@ -95,7 +105,8 @@ export type BackgroundMessage =
   | { type: 'GET_STATS' }
   | { type: 'RECORD_DEFLECTION'; username: string; points: number }
   | { type: 'ADD_WHITELIST'; username: string }
-  | { type: 'REMOVE_WHITELIST'; username: string };
+  | { type: 'REMOVE_WHITELIST'; username: string }
+  | { type: 'INVALIDATE_USER'; username: string };
 
 export type BackgroundResponse<T = unknown> =
   | { success: true; data: T }
