@@ -4,6 +4,11 @@ A Manifest V3 browser extension built with TypeScript and Bauhaus modernist desi
 
 ---
 
+## A Note from the author
+
+The rest of this shit is made by AI, sorry. I'm tired of the constant unreality on the internet. 
+This is my first, basic attempt at fighting back, I guess I can start with Reddit.
+
 ## Features & Detection Engine
 
 * **Personal Account Auto-Blocking:** Automatically blocks detected bot accounts on your personal Reddit profile (`/api/block_user`) using active session cookies, with graceful quota management.
@@ -16,7 +21,7 @@ A Manifest V3 browser extension built with TypeScript and Bauhaus modernist desi
 * **Circadian Rhythm Anomaly:** Flags scripts running 24/7 with zero biological sleep breaks.
 * **Extreme Karma Asymmetry & Ghost Karma:** Identifies automated repost bots (10k+ post karma vs <25 comment karma) and accounts with scrubbed karma-farming history.
 * **Drive-by Dialogue Deficit vs. Conversationalist Credit:** Distinguishes fire-and-forget spammers from genuine organic Redditors engaged in back-and-forth dialogue.
-* **Bauhaus Modernist UI:** Stark high-contrast palette, elementary geometry, modular grid, and live deflection statistics.
+* **Functional Modernist UI:** Stark high-contrast palette, elementary geometry, modular grid, and live deflection statistics.
 * **Universal Reddit Support:** Native adapters for both Modern Reddit (`shreddit` web components) and Classic Old Reddit (`old.reddit.com`).
 
 ---
