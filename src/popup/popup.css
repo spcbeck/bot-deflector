@@ -1,0 +1,379 @@
+/* Bauhaus Modernist Design System for BotDeflector Dashboard */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --c-black: #0A0A0A;
+  --c-white: #FFFFFF;
+  --c-gray-100: #F4F4F4;
+  --c-gray-200: #E0E0E0;
+  --c-gray-800: #222222;
+  --c-gray-900: #141414;
+  --c-red: #E53935;
+  --c-blue: #1976D2;
+  --c-yellow: #FBC02D;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+body {
+  width: 360px;
+  background-color: var(--c-black);
+  color: var(--c-white);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  user-select: none;
+  border: 2px solid var(--c-gray-800);
+}
+
+.bd-app {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header */
+.bd-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 2px solid var(--c-white);
+  background-color: var(--c-black);
+}
+
+.bd-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Bauhaus Logo Mark: Stark Square with Red Angle & Blue Dot */
+.bd-logo-mark {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--c-white);
+  position: relative;
+  background: var(--c-black);
+}
+
+.bd-logo-mark::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 10px;
+  height: 10px;
+  background-color: var(--c-red);
+}
+
+.bd-logo-mark::after {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  background-color: var(--c-blue);
+}
+
+.bd-title-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.bd-title {
+  font-family: var(--font-sans);
+  font-weight: 900;
+  font-size: 15px;
+  letter-spacing: 1.5px;
+  color: var(--c-white);
+  line-height: 1;
+}
+
+.bd-subtitle {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--c-gray-200);
+  letter-spacing: 0.8px;
+  margin-top: 3px;
+}
+
+.bd-status-indicator {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--c-black);
+  background-color: var(--c-yellow);
+  padding: 3px 8px;
+  letter-spacing: 0.5px;
+}
+
+/* Modular Metrics Grid */
+.bd-metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  border-bottom: 2px solid var(--c-gray-800);
+}
+
+.bd-metric-card {
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border-right: 1px solid var(--c-gray-800);
+  background-color: var(--c-gray-900);
+}
+
+.bd-metric-card:last-child {
+  border-right: none;
+}
+
+.bd-card-red .bd-metric-value {
+  color: var(--c-red);
+}
+
+.bd-card-blue .bd-metric-value {
+  color: var(--c-blue);
+}
+
+.bd-card-neutral .bd-metric-value {
+  color: var(--c-white);
+}
+
+.bd-metric-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #888888;
+  margin-bottom: 4px;
+}
+
+.bd-metric-value {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* Control Panel */
+.bd-control-panel {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bd-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bd-group-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #AAAAAA;
+}
+
+/* Segmented Buttons */
+.bd-toggle-segment {
+  display: flex;
+  border: 1px solid var(--c-gray-800);
+}
+
+.bd-segment-btn {
+  flex: 1;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #888888;
+  background: var(--c-black);
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.bd-segment-btn.active {
+  background-color: var(--c-white);
+  color: var(--c-black);
+}
+
+/* Slider */
+.bd-slider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.bd-slider-val {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c-red);
+}
+
+.bd-slider {
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--c-gray-800);
+  outline: none;
+  margin: 6px 0;
+}
+
+.bd-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--c-red);
+  cursor: pointer;
+  border: 1px solid var(--c-white);
+}
+
+.bd-slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: #666666;
+}
+
+/* Checkboxes */
+.bd-checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bd-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.bd-checkbox-row input {
+  display: none;
+}
+
+.bd-checkbox-box {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--c-gray-200);
+  background: var(--c-black);
+  display: inline-block;
+  position: relative;
+}
+
+.bd-checkbox-row input:checked + .bd-checkbox-box {
+  background-color: var(--c-blue);
+  border-color: var(--c-blue);
+}
+
+.bd-checkbox-row input:checked + .bd-checkbox-box::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 6px;
+  height: 6px;
+  background: var(--c-white);
+}
+
+.bd-checkbox-text {
+  color: #CCCCCC;
+}
+
+/* Whitelist Input & Tags */
+.bd-whitelist-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.bd-input {
+  flex: 1;
+  background: var(--c-gray-900);
+  border: 1px solid var(--c-gray-800);
+  color: var(--c-white);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  outline: none;
+}
+
+.bd-input:focus {
+  border-color: var(--c-white);
+}
+
+.bd-btn {
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+}
+
+.bd-btn-primary {
+  background-color: var(--c-white);
+  color: var(--c-black);
+}
+
+.bd-btn-primary:hover {
+  background-color: var(--c-yellow);
+}
+
+.bd-whitelist-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 60px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.bd-whitelist-tag {
+  background: var(--c-gray-900);
+  border: 1px solid var(--c-gray-800);
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #CCCCCC;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bd-tag-remove {
+  cursor: pointer;
+  color: var(--c-red);
+  font-weight: bold;
+}
+
+/* Footer */
+.bd-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--c-gray-800);
+  background-color: var(--c-black);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: #777777;
+}
+
+.bd-privacy-badge {
+  color: var(--c-blue);
+  font-weight: 700;
+}

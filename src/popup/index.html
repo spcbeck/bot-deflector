@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BotDeflector</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="bd-app">
+    <!-- Bauhaus Header Block -->
+    <header class="bd-header">
+      <div class="bd-brand">
+        <div class="bd-logo-mark"></div>
+        <div class="bd-title-group">
+          <h1 class="bd-title">BOTDEFLECTOR</h1>
+          <span class="bd-subtitle">AUTONOMOUS SPAM DEFENSE</span>
+        </div>
+      </div>
+      <div class="bd-status-indicator" id="status-tag">ACTIVE</div>
+    </header>
+
+    <!-- Modular Grid Metrics -->
+    <section class="bd-metrics-grid">
+      <div class="bd-metric-card bd-card-red">
+        <span class="bd-metric-label">DEFLECTED</span>
+        <span class="bd-metric-value" id="stat-deflected">0</span>
+      </div>
+      <div class="bd-metric-card bd-card-blue">
+        <span class="bd-metric-label">SCANNED</span>
+        <span class="bd-metric-value" id="stat-scanned">0</span>
+      </div>
+      <div class="bd-metric-card bd-card-neutral">
+        <span class="bd-metric-label">CACHE HITS</span>
+        <span class="bd-metric-value" id="stat-cache">0</span>
+      </div>
+    </section>
+
+    <!-- Controls & Heuristic Configuration -->
+    <section class="bd-control-panel">
+      <!-- Mode Toggle -->
+      <div class="bd-control-group">
+        <label class="bd-group-label">DEFLECTION MODE</label>
+        <div class="bd-toggle-segment" id="mode-selector">
+          <button class="bd-segment-btn active" data-mode="STEALTH_COLLAPSE">STEALTH COLLAPSE</button>
+          <button class="bd-segment-btn" data-mode="AUDIT_TAG">AUDIT TAG</button>
+        </div>
+      </div>
+
+      <!-- Sensitivity Slider -->
+      <div class="bd-control-group">
+        <div class="bd-slider-header">
+          <label class="bd-group-label" for="threshold-slider">DEFLECT THRESHOLD</label>
+          <span class="bd-slider-val" id="threshold-val">70 PTS</span>
+        </div>
+        <input type="range" id="threshold-slider" min="40" max="90" step="5" value="70" class="bd-slider" />
+        <div class="bd-slider-ticks">
+          <span>40 (STRICT)</span>
+          <span>70 (BALANCED)</span>
+          <span>90 (LENIENT)</span>
+        </div>
+      </div>
+
+      <!-- Detection Toggles -->
+      <div class="bd-control-group">
+        <label class="bd-group-label">ACTIVE HEURISTIC LAYERS</label>
+        <div class="bd-checkbox-list">
+          <label class="bd-checkbox-row">
+            <input type="checkbox" id="toggle-repost" checked />
+            <span class="bd-checkbox-box"></span>
+            <span class="bd-checkbox-text">Viral Repost Archival Search</span>
+          </label>
+          <label class="bd-checkbox-row">
+            <input type="checkbox" id="toggle-cadence" checked />
+            <span class="bd-checkbox-box"></span>
+            <span class="bd-checkbox-text">Smart Drilldown (Cadence & Circadian)</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Whitelist Manager -->
+      <div class="bd-control-group">
+        <label class="bd-group-label">LOCAL WHITELIST</label>
+        <div class="bd-whitelist-input-row">
+          <input type="text" id="whitelist-input" placeholder="username..." class="bd-input" />
+          <button id="whitelist-add-btn" class="bd-btn bd-btn-primary">ADD</button>
+        </div>
+        <div class="bd-whitelist-tags" id="whitelist-tags">
+          <!-- Populated by popup.ts -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer Meta -->
+    <footer class="bd-footer">
+      <span class="bd-version">V1.0.0 &bull; LOCAL SCAN ONLY</span>
+      <span class="bd-privacy-badge">100% PRIVATE</span>
+    </footer>
+  </div>
+
+  <script type="module" src="popup.ts"></script>
+</body>
+</html>
