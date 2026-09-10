@@ -103,10 +103,14 @@ export type BackgroundMessage =
   | { type: 'GET_SETTINGS' }
   | { type: 'UPDATE_SETTINGS'; settings: Partial<ExtensionSettings> }
   | { type: 'GET_STATS' }
+  | { type: 'GET_TAB_STATS'; tabId?: number }
   | { type: 'RECORD_DEFLECTION'; username: string; points: number }
   | { type: 'ADD_WHITELIST'; username: string }
   | { type: 'REMOVE_WHITELIST'; username: string }
   | { type: 'INVALIDATE_USER'; username: string };
+
+export type TabMessage =
+  | { type: 'USERS_EVALUATED'; users: Record<string, ScoredUser> };
 
 export type BackgroundResponse<T = unknown> =
   | { success: true; data: T }

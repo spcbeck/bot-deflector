@@ -47,7 +47,11 @@ When submitting to the Chrome Web Store Developer Dashboard, you must provide pl
 
 ### `storage`
 * **Justification:**
-  > "Required to cache evaluated user profile scores locally on the user's machine (with a 7-day TTL) and persist the user's custom deflection thresholds, mode preferences, and whitelist. No stored data is ever transmitted off the device."
+  > "Required to cache evaluated user profile scores locally on the user's machine (with tiered TTLs) and persist the user's custom deflection thresholds, mode preferences, whitelist, and session state. No stored data is ever transmitted off the device."
+
+### `alarms`
+* **Justification:**
+  > "Required to periodically trigger an automated background maintenance sweep (once every 24 hours) that evicts expired cached evaluation records from local storage, preventing memory leaks and unbounded storage accumulation."
 
 ### Host Permission: `*://*.reddit.com/*`
 * **Justification:**
@@ -91,6 +95,6 @@ To create the verified release `.zip` for upload:
    npm run package
    ```
 2. The script runs type checking, builds the extension, validates that all required files and icons are present, and compresses the contents of `dist/` directly into:
-   * `bot-deflector-v1.0.0.zip`
+   * `bot-deflector-v1.2.0.zip`
    * `bot-deflector.zip`
-3. Upload `bot-deflector-v1.0.0.zip` to the [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole).
+3. Upload `bot-deflector-v1.2.0.zip` to the [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole).

@@ -18,7 +18,39 @@ document.addEventListener('DOMContentLoaded', async () => {
   const whitelistAddBtn = document.getElementById('whitelist-add-btn');
   const whitelistTags = document.getElementById('whitelist-tags');
 
-  // Load Stats
+  const tabBanner = document.getElementById('tab-banner');
+  const tabDeflectedCount = document.getElementById('tab-deflected-count');
+  const versionEl = document.getElementById('app-version');
+
+  // Dynamic manifest version
+  if (versionEl && typeof chrome !== 'undefined' && chrome.runtime?.getManifest) {
+    const manifest = chrome.runtime.getManifest();
+    if (manifest?.version) {
+      versionEl.textContent = `V${manifest.version} • LOCAL SCAN ONLY`;
+    }
+  }
+
+  // Load Active Tab Stats
+  async function loadTabStats() {
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab?.id && tabBanner && tabDeflectedCount) {
+        const res = await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<{ tabDeflectedCount: number }>>({
+          type: 'GET_TAB_STATS',
+          tabId: activeTab.id
+        });
+        if (res?.success && res.data) {
+          tabDeflectedCount.textContent = String(res.data.tabDeflectedCount);
+          tabBanner.style.display = 'flex';
+        }
+      }
+    } catch (err) {
+      console.warn('[BotDeflector Popup] Could not load tab stats:', err);
+    }
+  }
+  await loadTabStats();
+
+  // Load Global Lifetime Stats
   try {
     const statsRes = await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<DeflectorStats>>({
       type: 'GET_STATS'
@@ -34,6 +66,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch (err) {
     console.warn('[BotDeflector Popup] Could not load stats:', err);
+  }
+
+  // Live storage updates (reactive dashboard)
+  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local' && changes['deflector_stats']?.newValue) {
+        const newStats = changes['deflector_stats'].newValue as DeflectorStats;
+        if (deflectedEl) deflectedEl.textContent = String(newStats.deflectedCount);
+        if (blockedEl) blockedEl.textContent = String(newStats.blockedCount);
+        if (scannedEl) scannedEl.textContent = String(newStats.scannedCount);
+        if (cacheEl) cacheEl.textContent = String(newStats.cacheHitCount);
+        if (quotaWarning) {
+          quotaWarning.style.display = newStats.quotaExceeded ? 'flex' : 'none';
+        }
+      }
+      if (areaName === 'session') {
+        loadTabStats();
+      }
+    });
   }
 
   // Load Settings

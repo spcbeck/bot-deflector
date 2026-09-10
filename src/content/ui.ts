@@ -120,13 +120,39 @@ export function createSubmissionRepostBanner(
   body.className = 'bd-banner-body';
 
   const createdDate = new Date(originalPost.createdUtc * 1000).toLocaleDateString();
-  body.innerHTML = `
-    <strong>Exact Historical Title Repost Detected:</strong> Original post from <strong>${createdDate}</strong> with <strong>${originalPost.score.toLocaleString()} upvotes</strong>.
-    <br/>
-    <a class="bd-banner-link" href="https://reddit.com${originalPost.permalink || ''}" target="_blank" rel="noopener noreferrer">
-      &rarr; View Original Submission
-    </a>
-  `;
+
+  const titlePrefix = document.createElement('strong');
+  titlePrefix.textContent = 'Exact Historical Title Repost Detected: ';
+  body.appendChild(titlePrefix);
+
+  body.appendChild(document.createTextNode('Original post from '));
+
+  const dateStrong = document.createElement('strong');
+  dateStrong.textContent = createdDate;
+  body.appendChild(dateStrong);
+
+  body.appendChild(document.createTextNode(' with '));
+
+  const upvotesStrong = document.createElement('strong');
+  upvotesStrong.textContent = `${originalPost.score.toLocaleString()} upvotes`;
+  body.appendChild(upvotesStrong);
+
+  body.appendChild(document.createTextNode('.'));
+  body.appendChild(document.createElement('br'));
+
+  const link = document.createElement('a');
+  link.className = 'bd-banner-link';
+  const permalink = (originalPost.permalink || '').trim();
+  const safeHref = permalink.startsWith('/')
+    ? `https://reddit.com${permalink}`
+    : permalink.startsWith('https://reddit.com/') || permalink.startsWith('https://www.reddit.com/')
+    ? permalink
+    : `https://reddit.com/r/${encodeURIComponent(originalPost.subreddit || '')}`;
+  link.href = safeHref;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = '→ View Original Submission';
+  body.appendChild(link);
 
   banner.appendChild(header);
   banner.appendChild(body);

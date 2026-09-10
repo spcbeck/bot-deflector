@@ -1,12 +1,11 @@
+import { getSessionModhash, setSessionModhash } from './cache';
 import { requestQueue } from './rateLimiter';
 
-let cachedModhash: string | null = null;
-let modhashExpiry = 0;
-
 export async function getRedditModhash(): Promise<string | null> {
+  const session = await getSessionModhash();
   const now = Date.now();
-  if (cachedModhash && now < modhashExpiry) {
-    return cachedModhash;
+  if (session && now < session.expiry) {
+    return session.modhash;
   }
 
   return requestQueue.enqueue(async () => {
@@ -25,8 +24,8 @@ export async function getRedditModhash(): Promise<string | null> {
       const data = await res.json();
       const modhash = data?.data?.modhash;
       if (typeof modhash === 'string' && modhash.length > 0) {
-        cachedModhash = modhash;
-        modhashExpiry = Date.now() + (30 * 60 * 1000); // 30 min cache
+        const expiry = Date.now() + (30 * 60 * 1000); // 30 min cache
+        await setSessionModhash(modhash, expiry);
         return modhash;
       }
       return null;

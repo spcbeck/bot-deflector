@@ -216,10 +216,30 @@ export function scoreUser(
   const totalPoints = breakdown.reduce((sum, hit) => sum + hit.points, 0);
   const normalizedScore = Math.max(0, Math.min(100, totalPoints));
 
+  // Circumstantial metadata-only rules (baseline traits that organic new users can naturally possess)
+  const circumstantialRuleIds = new Set([
+    'fresh_account_48h',
+    'young_account_14d',
+    'auto_generated_username',
+    'low_karma_baseline'
+  ]);
+
+  // Check if there are affirmative threat signals beyond circumstantial metadata
+  const hasAffirmativeThreat = breakdown.some(
+    (hit) => hit.points > 0 && !circumstantialRuleIds.has(hit.ruleId)
+  );
+
+  // If account has ONLY circumstantial baseline metadata hits without affirmative behavioral spam signals,
+  // cap score below deflectThreshold (to classify as FLAG for auditing rather than instant DEFLECT)
+  let finalScore = normalizedScore;
+  if (!hasAffirmativeThreat && normalizedScore >= deflectThreshold) {
+    finalScore = Math.min(normalizedScore, deflectThreshold - 5);
+  }
+
   let classification: Classification = 'CLEAN';
-  if (normalizedScore >= deflectThreshold) {
+  if (finalScore >= deflectThreshold) {
     classification = 'DEFLECT';
-  } else if (normalizedScore >= flagThreshold) {
+  } else if (finalScore >= flagThreshold) {
     classification = 'FLAG';
   }
 
@@ -230,7 +250,7 @@ export function scoreUser(
 
   return {
     username,
-    score: normalizedScore,
+    score: finalScore,
     classification,
     breakdown,
     evaluatedAt: Date.now(),

@@ -14,6 +14,7 @@ export class ContentOrchestrator {
   private processedCommentIds = new Set<string>();
   private activeSettings: ExtensionSettings | null = null;
   private isScanning = false;
+  private lastUrl = typeof location !== 'undefined' ? location.pathname + location.search : '';
 
   constructor(client: DeflectorClient = new ExtensionBackendClient()) {
     this.client = client;
@@ -44,10 +45,60 @@ export class ContentOrchestrator {
     // 2. Scan visible comments
     await this.scanComments();
 
-    // 3. Attach MutationObserver for dynamically loaded comments (infinite scroll)
+    // 3. Listen for streaming background evaluations
+    this.client.onUsersEvaluated((newlyScored) => {
+      if (!this.adapter) return;
+      const allComments = this.adapter.findComments();
+      this.applyScoredResults(allComments, newlyScored);
+    });
+
+    // 4. Attach MutationObserver for dynamically loaded comments (infinite scroll)
     this.adapter.observe(() => {
+      this.checkRouteUrl();
       this.debouncedScan();
     });
+
+    // 5. Watch for Single Page Application (SPA) history navigation on Reddit
+    this.initSpaNavigationWatcher();
+  }
+
+  private initSpaNavigationWatcher(): void {
+    if (typeof window === 'undefined') return;
+
+    window.addEventListener('popstate', () => this.checkRouteUrl());
+
+    // Patch pushState and replaceState to detect programmatic client-side navigation
+    const origPush = history.pushState;
+    history.pushState = (...args) => {
+      origPush.apply(history, args);
+      this.checkRouteUrl();
+    };
+
+    const origReplace = history.replaceState;
+    history.replaceState = (...args) => {
+      origReplace.apply(history, args);
+      this.checkRouteUrl();
+    };
+  }
+
+  private checkRouteUrl(): void {
+    if (typeof location === 'undefined') return;
+    const currentUrl = location.pathname + location.search;
+    if (currentUrl !== this.lastUrl) {
+      console.log(`[BotDeflector] SPA Route transition: ${this.lastUrl} -> ${currentUrl}`);
+      this.lastUrl = currentUrl;
+      this.handleRouteChange();
+    }
+  }
+
+  private handleRouteChange(): void {
+    // Reset thread state for the new route
+    this.historicalTopComments = [];
+    this.processedCommentIds.clear();
+
+    // Re-evaluate the new submission and trigger scanning
+    this.evaluateSubmission();
+    this.debouncedScan();
   }
 
   private debounceTimer: number | null = null;
@@ -164,42 +215,49 @@ export class ContentOrchestrator {
       }
 
       const scoredMap = await this.client.checkUsers(usernames);
-
-      for (const c of remainingComments) {
-        let scored = scoredMap[c.author.toLowerCase().replace(/^u\//, '')];
-        if (!scored) continue;
-
-        // Local Heuristic Veto:
-        // Even if account passed heuristics previously (cached CLEAN),
-        // check current comment for hard scraper artifacts or merch links
-        const unescapedHit = evaluateUnescapedEntities(c.bodyText);
-        const merchHit = evaluateMerchSpam(c.bodyText);
-
-        if (scored.classification === 'CLEAN' && (unescapedHit || merchHit)) {
-          const hits = [unescapedHit, merchHit].filter(Boolean) as NonNullable<typeof unescapedHit>[];
-          this.client.invalidateUser(c.author).catch(() => {});
-          scored = {
-            ...scored,
-            score: Math.max(scored.score, 75),
-            classification: 'DEFLECT',
-            breakdown: [...scored.breakdown, ...hits]
-          };
-        }
-
-        if (scored.classification === 'DEFLECT') {
-          this.adapter.collapseComment(
-            c,
-            scored,
-            () => {},
-            () => this.client.addWhitelist(scored.username),
-            () => this.client.blockUser(scored.username)
-          );
-        } else if (scored.classification === 'FLAG' && this.activeSettings?.mode === 'AUDIT_TAG') {
-          c.element.style.borderLeft = '3px solid #FBC02D';
-        }
-      }
+      this.applyScoredResults(remainingComments, scoredMap);
     } finally {
       this.isScanning = false;
+    }
+  }
+
+  private applyScoredResults(comments: RedditCommentElement[], scoredMap: Record<string, ScoredUser>): void {
+    if (!this.adapter) return;
+
+    for (const c of comments) {
+      if (c.element.dataset.bdDeflected === 'true') continue;
+
+      let scored = scoredMap[c.author.toLowerCase().replace(/^u\//, '')];
+      if (!scored) continue;
+
+      // Local Heuristic Veto:
+      // Even if account passed heuristics previously (cached CLEAN),
+      // check current comment for hard scraper artifacts or merch links
+      const unescapedHit = evaluateUnescapedEntities(c.bodyText);
+      const merchHit = evaluateMerchSpam(c.bodyText);
+
+      if (scored.classification === 'CLEAN' && (unescapedHit || merchHit)) {
+        const hits = [unescapedHit, merchHit].filter(Boolean) as NonNullable<typeof unescapedHit>[];
+        this.client.invalidateUser(c.author).catch(() => {});
+        scored = {
+          ...scored,
+          score: Math.max(scored.score, 75),
+          classification: 'DEFLECT',
+          breakdown: [...scored.breakdown, ...hits]
+        };
+      }
+
+      if (scored.classification === 'DEFLECT') {
+        this.adapter.collapseComment(
+          c,
+          scored,
+          () => {},
+          () => this.client.addWhitelist(scored.username),
+          () => this.client.blockUser(scored.username)
+        );
+      } else if (scored.classification === 'FLAG' && this.activeSettings?.mode === 'AUDIT_TAG') {
+        c.element.style.borderLeft = '3px solid #FBC02D';
+      }
     }
   }
 

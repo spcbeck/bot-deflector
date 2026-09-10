@@ -1,14 +1,18 @@
 import { scoreUser } from '../engine/scorer';
-import { BackgroundMessage, ScoredUser } from '../types';
+import { BackgroundMessage, ScoredUser, TabMessage } from '../types';
 import { blockRedditUser } from './blocker';
 import {
+  addTabDeflectedUsers,
+  clearTabDeflections,
   getCachedUser,
   getCachedUsersBatch,
   getSettings,
   getStats,
+  getTabDeflectedCount,
   incrementStats,
   invalidateCachedUser,
   setCachedUser,
+  sweepExpiredCacheRecords,
   updateSettings
 } from './cache';
 import {
@@ -18,8 +22,56 @@ import {
   searchSubredditHistoricalPosts
 } from './fetcher';
 
-// Map tabId -> Set of deflected usernames
-const tabDeflectionMap = new Map<number, Set<string>>();
+// ---------------------------------------------------------------------------
+// Lifecycle & Alarms Handlers
+// ---------------------------------------------------------------------------
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  console.log(`[BotDeflector] Installed / Updated: ${details.reason}`);
+  await getSettings();
+
+  try {
+    await chrome.alarms.create('cache_sweep_alarm', {
+      periodInMinutes: 1440,
+      delayInMinutes: 60
+    });
+  } catch (err) {
+    console.warn('[BotDeflector] Could not register cache_sweep_alarm:', err);
+  }
+});
+
+chrome.alarms?.onAlarm?.addListener(async (alarm) => {
+  if (alarm.name === 'cache_sweep_alarm') {
+    console.log('[BotDeflector] Running scheduled cache sweep...');
+    try {
+      const res = await sweepExpiredCacheRecords();
+      console.log(`[BotDeflector] Cache sweep complete: scanned ${res.scanned}, removed ${res.removed} expired keys.`);
+    } catch (err) {
+      console.warn('[BotDeflector] Cache sweep error:', err);
+    }
+  }
+});
+
+// Clean up session storage when tab is closed
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await clearTabDeflections(tabId);
+});
+
+// Helper to safely set badge text on a tab
+async function updateTabBadge(tabId: number, count: number): Promise<void> {
+  try {
+    await chrome.action.setBadgeText({
+      tabId,
+      text: count > 0 ? String(count) : ''
+    });
+    await chrome.action.setBadgeBackgroundColor({
+      tabId,
+      color: '#E53935' // Bauhaus Bold Red
+    });
+  } catch {
+    // Tab may have closed before badge could be updated
+  }
+}
 
 chrome.runtime.onMessage.addListener((message: BackgroundMessage, sender, sendResponse) => {
   (async () => {
@@ -70,86 +122,38 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
         await incrementStats({ cacheHits: cacheHitCount });
       }
 
-      // Process uncached users through rate-limited fetcher
-      for (const username of uncached) {
-        try {
-          const profile = await fetchUserProfile(username);
-          let comments: any[] = [];
+      const tabId = sender.tab?.id;
 
-          if (profile) {
-            // Smart Drilldown check:
-            // Fetch comments if account is in the suspicious dormancy window (age 60d to 1000d with low karma),
-            // or if account has high karma asymmetry or negative karma
-            const ageDays = (Date.now() / 1000 - profile.createdUtc) / 86400;
-            const isSuspiciousProfile =
-              (ageDays >= 60 && ageDays <= 1000 && profile.totalKarma < 150) ||
-              (profile.linkKarma > 5000 && profile.commentKarma < 30) ||
-              profile.totalKarma < 0;
+      // Update tab session and badge immediately for cached deflected accounts
+      if (tabId) {
+        const deflectedCached = Object.values(results)
+          .filter((user) => user.classification === 'DEFLECT')
+          .map((u) => u.username);
 
-            if (isSuspiciousProfile && settings.enableCadenceCheck) {
-              comments = await fetchUserComments(username);
-            }
-          }
+        if (deflectedCached.length > 0) {
+          const count = await addTabDeflectedUsers(tabId, deflectedCached);
+          await updateTabBadge(tabId, count);
+        }
+      }
 
-          const scored = scoreUser(
-            username,
-            profile || undefined,
-            comments,
-            undefined,
-            undefined,
-            {
-              deflectThreshold: settings.deflectThreshold,
-              flagThreshold: settings.flagThreshold,
-              userWhitelist: settings.whitelist
-            }
-          );
+      // If caller explicitly requested awaitAll or sender is not a tab, await all evaluations
+      const shouldAwaitAll = !tabId || (message as any).awaitAll === true;
 
-          // If user is deflected and auto-block is enabled, block them on Reddit
-          if (scored.classification === 'DEFLECT' && settings.autoBlockReddit && !scored.isBlockedOnReddit) {
-            const blockRes = await blockRedditUser(username);
-            if (blockRes.success) {
-              scored.isBlockedOnReddit = true;
-              await incrementStats({ blocked: 1 });
-            } else if (blockRes.quotaExceeded) {
-              await incrementStats({ quotaExceeded: true });
-            }
-          }
+      if (uncached.length > 0) {
+        const evaluationPromise = processUncachedUsers(uncached, settings, tabId);
 
-          await setCachedUser(scored);
-          await incrementStats({
-            scanned: 1,
-            deflected: scored.classification === 'DEFLECT' ? 1 : 0
+        if (shouldAwaitAll) {
+          const freshResults = await evaluationPromise;
+          Object.assign(results, freshResults);
+        } else {
+          // Fire and forget evaluation in background; results will stream back to the tab
+          evaluationPromise.catch((err) => {
+            console.warn('[BotDeflector] Background user evaluation error:', err);
           });
-
-          results[username] = scored;
-        } catch (err) {
-          console.warn(`[BotDeflector] Could not evaluate ${username}:`, err);
         }
       }
 
-      // Update badge for sender tab if applicable
-      if (sender.tab?.id) {
-        const tabId = sender.tab.id;
-        const currentSet = tabDeflectionMap.get(tabId) || new Set<string>();
-
-        for (const user of Object.values(results)) {
-          if (user.classification === 'DEFLECT') {
-            currentSet.add(user.username.toLowerCase());
-          }
-        }
-        tabDeflectionMap.set(tabId, currentSet);
-
-        const count = currentSet.size;
-        await chrome.action.setBadgeText({
-          tabId,
-          text: count > 0 ? String(count) : ''
-        });
-        await chrome.action.setBadgeBackgroundColor({
-          tabId,
-          color: '#E53935' // Bauhaus Bold Red
-        });
-      }
-
+      // Return immediately so content script collapses cached bots with zero latency
       return results;
     }
 
@@ -211,6 +215,13 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
     case 'GET_STATS':
       return await getStats();
 
+    case 'GET_TAB_STATS': {
+      const targetTabId = message.tabId || sender.tab?.id;
+      if (!targetTabId) return { tabDeflectedCount: 0 };
+      const count = await getTabDeflectedCount(targetTabId);
+      return { tabDeflectedCount: count };
+    }
+
     case 'ADD_WHITELIST': {
       const current = await getSettings();
       const clean = message.username.toLowerCase().replace(/^u\//, '');
@@ -238,7 +249,88 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
   }
 }
 
-// Clear tab map when tab is closed
-chrome.tabs.onRemoved.addListener((tabId) => {
-  tabDeflectionMap.delete(tabId);
-});
+/**
+ * Evaluates uncached users in the background with rate-limited requests,
+ * saves to storage, updates tab session badge, and pushes results back to the active tab.
+ */
+async function processUncachedUsers(
+  usernames: string[],
+  settings: Awaited<ReturnType<typeof getSettings>>,
+  tabId?: number
+): Promise<Record<string, ScoredUser>> {
+  const newlyScored: Record<string, ScoredUser> = {};
+
+  for (const username of usernames) {
+    try {
+      const profile = await fetchUserProfile(username);
+      let comments: any[] = [];
+
+      if (profile) {
+        const ageDays = (Date.now() / 1000 - profile.createdUtc) / 86400;
+        const isSuspiciousProfile =
+          (ageDays >= 60 && ageDays <= 1000 && profile.totalKarma < 150) ||
+          (profile.linkKarma > 5000 && profile.commentKarma < 30) ||
+          profile.totalKarma < 0;
+
+        if (isSuspiciousProfile && settings.enableCadenceCheck) {
+          comments = await fetchUserComments(username);
+        }
+      }
+
+      const scored = scoreUser(
+        username,
+        profile || undefined,
+        comments,
+        undefined,
+        undefined,
+        {
+          deflectThreshold: settings.deflectThreshold,
+          flagThreshold: settings.flagThreshold,
+          userWhitelist: settings.whitelist
+        }
+      );
+
+      // If user is deflected and auto-block is enabled, block them on Reddit
+      if (scored.classification === 'DEFLECT' && settings.autoBlockReddit && !scored.isBlockedOnReddit) {
+        const blockRes = await blockRedditUser(username);
+        if (blockRes.success) {
+          scored.isBlockedOnReddit = true;
+          await incrementStats({ blocked: 1 });
+        } else if (blockRes.quotaExceeded) {
+          await incrementStats({ quotaExceeded: true });
+        }
+      }
+
+      await setCachedUser(scored);
+      await incrementStats({
+        scanned: 1,
+        deflected: scored.classification === 'DEFLECT' ? 1 : 0
+      });
+
+      newlyScored[username] = scored;
+
+      // Update badge progressively if deflected
+      if (tabId && scored.classification === 'DEFLECT') {
+        const count = await addTabDeflectedUsers(tabId, [scored.username]);
+        await updateTabBadge(tabId, count);
+      }
+    } catch (err) {
+      console.warn(`[BotDeflector] Could not evaluate ${username}:`, err);
+    }
+  }
+
+  // Push newly evaluated users back to the sender tab
+  if (tabId && Object.keys(newlyScored).length > 0) {
+    try {
+      const pushMessage: TabMessage = {
+        type: 'USERS_EVALUATED',
+        users: newlyScored
+      };
+      await chrome.tabs.sendMessage(tabId, pushMessage);
+    } catch {
+      // Tab may have navigated or closed
+    }
+  }
+
+  return newlyScored;
+}

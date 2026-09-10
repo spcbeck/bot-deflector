@@ -221,3 +221,138 @@ export async function incrementStats(updates: {
   await chrome.storage.local.set({ [STATS_KEY]: next });
   return next;
 }
+
+/**
+ * Sweeps chrome.storage.local and deletes all expired clean, threat, and legacy cache entries.
+ * Runs on daily alarms to prevent unbounded storage growth.
+ */
+export async function sweepExpiredCacheRecords(now = Date.now()): Promise<{ scanned: number; removed: number }> {
+  const all = await chrome.storage.local.get(null);
+  const keysToRemove: string[] = [];
+  let scanned = 0;
+
+  for (const [key, value] of Object.entries(all)) {
+    if (key.startsWith(CLEAN_CACHE_PREFIX)) {
+      scanned++;
+      const record = value as CompactCleanRecord;
+      if (record && isCleanRecordExpired(record, now)) {
+        keysToRemove.push(key);
+      }
+    } else if (key.startsWith(THREAT_CACHE_PREFIX)) {
+      scanned++;
+      const record = value as ScoredUser;
+      if (record && isThreatRecordExpired(record, now)) {
+        keysToRemove.push(key);
+      }
+    } else if (key.startsWith(LEGACY_CACHE_PREFIX)) {
+      scanned++;
+      const record = value as ScoredUser;
+      if (record) {
+        if (record.classification === 'CLEAN') {
+          const tier = record.confidenceTier || 3;
+          const compact: CompactCleanRecord = {
+            username: record.username,
+            evaluatedAt: record.evaluatedAt,
+            tier,
+            score: record.score
+          };
+          if (isCleanRecordExpired(compact, now)) {
+            keysToRemove.push(key);
+          }
+        } else if (isThreatRecordExpired(record, now)) {
+          keysToRemove.push(key);
+        }
+      }
+    }
+  }
+
+  if (keysToRemove.length > 0) {
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < keysToRemove.length; i += BATCH_SIZE) {
+      await chrome.storage.local.remove(keysToRemove.slice(i, i + BATCH_SIZE));
+    }
+  }
+
+  return { scanned, removed: keysToRemove.length };
+}
+
+// ---------------------------------------------------------------------------
+// Ephemeral Session Storage (chrome.storage.session)
+// Survives Service Worker sleep/restart within a browser session
+// ---------------------------------------------------------------------------
+
+export const TAB_DEFLECTION_PREFIX = 'tab_deflected_';
+const MODHASH_KEY = 'session_reddit_modhash';
+
+// Fallback in-memory map for environments where chrome.storage.session is unmocked or unavailable
+const memorySessionFallback = new Map<string, any>();
+
+async function getSessionData<T>(key: string, fallback: T): Promise<T> {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      const res = await chrome.storage.session.get(key);
+      return (res[key] as T) ?? fallback;
+    }
+  } catch (err) {
+    console.warn('[BotDeflector Cache] Error reading chrome.storage.session:', err);
+  }
+  return memorySessionFallback.has(key) ? (memorySessionFallback.get(key) as T) : fallback;
+}
+
+async function setSessionData<T>(key: string, value: T): Promise<void> {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      await chrome.storage.session.set({ [key]: value });
+      return;
+    }
+  } catch (err) {
+    console.warn('[BotDeflector Cache] Error writing to chrome.storage.session:', err);
+  }
+  memorySessionFallback.set(key, value);
+}
+
+async function removeSessionData(key: string): Promise<void> {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+      await chrome.storage.session.remove(key);
+      return;
+    }
+  } catch (err) {
+    console.warn('[BotDeflector Cache] Error removing from chrome.storage.session:', err);
+  }
+  memorySessionFallback.delete(key);
+}
+
+export async function getTabDeflectedUsers(tabId: number): Promise<string[]> {
+  return await getSessionData<string[]>(`${TAB_DEFLECTION_PREFIX}${tabId}`, []);
+}
+
+export async function addTabDeflectedUsers(tabId: number, usernames: string[]): Promise<number> {
+  const current = await getTabDeflectedUsers(tabId);
+  const set = new Set(current);
+  for (const u of usernames) {
+    const clean = u.toLowerCase().replace(/^u\//, '').trim();
+    if (clean) set.add(clean);
+  }
+  const updated = Array.from(set);
+  await setSessionData(`${TAB_DEFLECTION_PREFIX}${tabId}`, updated);
+  return updated.length;
+}
+
+export async function clearTabDeflections(tabId: number): Promise<void> {
+  await removeSessionData(`${TAB_DEFLECTION_PREFIX}${tabId}`);
+}
+
+export async function getTabDeflectedCount(tabId: number): Promise<number> {
+  const list = await getTabDeflectedUsers(tabId);
+  return list.length;
+}
+
+export async function getSessionModhash(): Promise<{ modhash: string; expiry: number } | null> {
+  return await getSessionData<{ modhash: string; expiry: number } | null>(MODHASH_KEY, null);
+}
+
+export async function setSessionModhash(modhash: string, expiry: number): Promise<void> {
+  await setSessionData(MODHASH_KEY, { modhash, expiry });
+}
+
