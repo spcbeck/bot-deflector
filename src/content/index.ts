@@ -1,4 +1,5 @@
 import { DeflectorClient, ExtensionBackendClient } from '../core/client';
+import { evaluateMerchSpam, evaluateUnescapedEntities } from '../engine/heuristics';
 import { ExtensionSettings, ScoredUser } from '../types';
 import { RedditAdapter, RedditCommentElement } from './adapters/base';
 import { OldRedditAdapter } from './adapters/oldReddit';
@@ -124,6 +125,9 @@ export class ContentOrchestrator {
       const remainingComments: RedditCommentElement[] = [];
       for (const c of prioritized) {
         if (this.isAccompliceStolenComment(c.bodyText)) {
+          // Invalidate any stale clean cache for this account
+          this.client.invalidateUser(c.author).catch(() => {});
+
           // Instant deflection!
           const syntheticScored: ScoredUser = {
             username: c.author,
@@ -162,8 +166,25 @@ export class ContentOrchestrator {
       const scoredMap = await this.client.checkUsers(usernames);
 
       for (const c of remainingComments) {
-        const scored = scoredMap[c.author.toLowerCase().replace(/^u\//, '')];
+        let scored = scoredMap[c.author.toLowerCase().replace(/^u\//, '')];
         if (!scored) continue;
+
+        // Local Heuristic Veto:
+        // Even if account passed heuristics previously (cached CLEAN),
+        // check current comment for hard scraper artifacts or merch links
+        const unescapedHit = evaluateUnescapedEntities(c.bodyText);
+        const merchHit = evaluateMerchSpam(c.bodyText);
+
+        if (scored.classification === 'CLEAN' && (unescapedHit || merchHit)) {
+          const hits = [unescapedHit, merchHit].filter(Boolean) as NonNullable<typeof unescapedHit>[];
+          this.client.invalidateUser(c.author).catch(() => {});
+          scored = {
+            ...scored,
+            score: Math.max(scored.score, 75),
+            classification: 'DEFLECT',
+            breakdown: [...scored.breakdown, ...hits]
+          };
+        }
 
         if (scored.classification === 'DEFLECT') {
           this.adapter.collapseComment(

@@ -28,6 +28,7 @@ export interface DeflectorClient {
   checkUsers(usernames: string[]): Promise<Record<string, ScoredUser>>;
   addWhitelist(username: string): Promise<void>;
   blockUser(username: string): Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }>;
+  invalidateUser(username: string): Promise<void>;
 }
 
 export class ExtensionBackendClient implements DeflectorClient {
@@ -75,6 +76,13 @@ export class ExtensionBackendClient implements DeflectorClient {
       username
     });
     return res?.data || { success: false };
+  }
+
+  async invalidateUser(username: string): Promise<void> {
+    await chrome.runtime.sendMessage({
+      type: 'INVALIDATE_USER',
+      username
+    });
   }
 }
 
@@ -126,6 +134,17 @@ export class UserscriptBackendClient implements DeflectorClient {
 
   async blockUser(username: string): Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }> {
     return await blockRedditUser(username);
+  }
+
+  async invalidateUser(username: string): Promise<void> {
+    const key = USERSCRIPT_CACHE_PREFIX + username.toLowerCase();
+    try {
+      if (typeof GM_setValue === 'function') {
+        GM_setValue(key, null);
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {}
   }
 
   async checkSubmission(data: { title: string; subreddit: string; author: string }): Promise<{

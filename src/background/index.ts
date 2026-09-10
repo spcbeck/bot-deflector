@@ -3,9 +3,11 @@ import { BackgroundMessage, ScoredUser } from '../types';
 import { blockRedditUser } from './blocker';
 import {
   getCachedUser,
+  getCachedUsersBatch,
   getSettings,
   getStats,
   incrementStats,
+  invalidateCachedUser,
   setCachedUser,
   updateSettings
 } from './cache';
@@ -43,17 +45,29 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
       const results: Record<string, ScoredUser> = {};
       const uncached: string[] = [];
 
-      for (const rawName of message.usernames) {
-        const clean = rawName.replace(/^u\//, '').trim();
-        if (!clean || clean === '[deleted]') continue;
+      const cleanCandidates = Array.from(
+        new Set(
+          message.usernames
+            .map((raw) => raw.replace(/^u\//, '').trim().toLowerCase())
+            .filter((clean) => clean && clean !== '[deleted]')
+        )
+      );
 
-        const cached = await getCachedUser(clean);
+      const cachedMap = await getCachedUsersBatch(cleanCandidates);
+      let cacheHitCount = 0;
+
+      for (const clean of cleanCandidates) {
+        const cached = cachedMap.get(clean);
         if (cached) {
           results[clean] = cached;
-          await incrementStats({ cacheHits: 1 });
+          cacheHitCount++;
         } else {
           uncached.push(clean);
         }
+      }
+
+      if (cacheHitCount > 0) {
+        await incrementStats({ cacheHits: cacheHitCount });
       }
 
       // Process uncached users through rate-limited fetcher
@@ -212,6 +226,11 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
       return await updateSettings({
         whitelist: current.whitelist.filter((u) => u !== clean)
       });
+    }
+
+    case 'INVALIDATE_USER': {
+      await invalidateCachedUser(message.username);
+      return { success: true };
     }
 
     default:
