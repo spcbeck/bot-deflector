@@ -1,6 +1,6 @@
 {
   "name": "bot-deflector",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "A Manifest V3 browser extension for Reddit that detects and stealthily deflects bot accounts and repost farms.",
   "type": "module",
   "scripts": {
