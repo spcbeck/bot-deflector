@@ -1,5 +1,6 @@
 import { scoreUser } from '../engine/scorer';
 import { BackgroundMessage, ScoredUser, TabMessage } from '../types';
+import { logger } from '../core/logger';
 import { blockRedditUser } from './blocker';
 import {
   addTabDeflectedUsers,
@@ -28,6 +29,7 @@ import {
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log(`[BotDeflector] Installed / Updated: ${details.reason}`);
+  logger.info('BotDeflector background worker installed', { reason: details.reason });
   await getSettings();
 
   try {
@@ -37,6 +39,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     });
   } catch (err) {
     console.warn('[BotDeflector] Could not register cache_sweep_alarm:', err);
+    logger.warn('Could not register cache_sweep_alarm', { error: String(err) });
   }
 });
 
@@ -46,8 +49,10 @@ chrome.alarms?.onAlarm?.addListener(async (alarm) => {
     try {
       const res = await sweepExpiredCacheRecords();
       console.log(`[BotDeflector] Cache sweep complete: scanned ${res.scanned}, removed ${res.removed} expired keys.`);
+      logger.info('Cache sweep completed', { scanned: res.scanned, removed: res.removed });
     } catch (err) {
       console.warn('[BotDeflector] Cache sweep error:', err);
+      logger.error('Cache sweep error', err as Error);
     }
   }
 });
@@ -200,6 +205,7 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
     case 'BLOCK_USER': {
       const blockRes = await blockRedditUser(message.username);
       if (blockRes.success) {
+        logger.info('Reddit user blocked', { username: message.username });
         await incrementStats({ blocked: 1 });
         const cached = await getCachedUser(message.username);
         if (cached) {
@@ -207,6 +213,7 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
           await setCachedUser(cached);
         }
       } else if (blockRes.quotaExceeded) {
+        logger.warn('Reddit block quota exceeded', { username: message.username });
         await incrementStats({ quotaExceeded: true });
       }
       return blockRes;
@@ -295,10 +302,21 @@ async function processUncachedUsers(
         const blockRes = await blockRedditUser(username);
         if (blockRes.success) {
           scored.isBlockedOnReddit = true;
+          logger.info('Reddit bot account auto-blocked', { username: scored.username });
           await incrementStats({ blocked: 1 });
         } else if (blockRes.quotaExceeded) {
+          logger.warn('Reddit auto-block quota exceeded', { username: scored.username });
           await incrementStats({ quotaExceeded: true });
         }
+      }
+
+      if (scored.classification === 'DEFLECT') {
+        logger.info('Reddit bot account deflected', {
+          username: scored.username,
+          score: scored.score,
+          breakdownCount: scored.breakdown.length,
+          rules: scored.breakdown.map((b) => b.name)
+        });
       }
 
       await setCachedUser(scored);
@@ -316,6 +334,7 @@ async function processUncachedUsers(
       }
     } catch (err) {
       console.warn(`[BotDeflector] Could not evaluate ${username}:`, err);
+      logger.warn(`Could not evaluate user ${username}`, { error: String(err) });
     }
   }
 

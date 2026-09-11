@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BotDeflector for Reddit",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Detects and stealthily deflects automated bots, viral repost farms, and hijacked comments on Reddit.",
   "permissions": [
     "storage",
@@ -9,7 +9,8 @@
     "alarms"
   ],
   "host_permissions": [
-    "*://*.reddit.com/*"
+    "*://*.reddit.com/*",
+    "https://logs.seanbeck.net/*"
   ],
   "background": {
     "service_worker": "background.js",
