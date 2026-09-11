@@ -4,9 +4,11 @@ import {
   addTabDeflectedUsers,
   clearTabDeflections,
   CLEAN_CACHE_PREFIX,
+  getRecentThreatUsers,
   getSessionModhash,
   getTabDeflectedCount,
   getTabDeflectedUsers,
+  getTabThreatUsers,
   setSessionModhash,
   sweepExpiredCacheRecords,
   THREAT_CACHE_PREFIX
@@ -168,3 +170,115 @@ test('SW-4: Young Account Probationary Dampener Prevents False Positives', () =>
   assert.strictEqual(scoredSpammer.classification, 'DEFLECT');
   assert.ok(scoredSpammer.score >= 70, `Score was ${scoredSpammer.score}, expected >= 70`);
 });
+
+test('SW-5: Tab Threat Users Retrieval retrieves stored and synthetic tab deflections', async () => {
+  const tabId = 555;
+  const originalChrome = (globalThis as any).chrome;
+  const mockStorage: Record<string, any> = {};
+
+  (globalThis as any).chrome = {
+    storage: {
+      local: {
+        get: async (keys: any) => {
+          if (keys === null) return { ...mockStorage };
+          const result: Record<string, any> = {};
+          const keyArray = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyArray) {
+            if (k in mockStorage) result[k] = mockStorage[k];
+          }
+          return result;
+        }
+      }
+    }
+  };
+
+  try {
+    const now = Date.now();
+    const scored1: ScoredUser = {
+      username: 'bot_alpha',
+      score: 90,
+      classification: 'DEFLECT',
+      breakdown: [{ ruleId: 'cadence', category: 'cadence', name: 'Inhuman Velocity', points: 50, description: '' }],
+      evaluatedAt: now - 5000
+    };
+    mockStorage[`${THREAT_CACHE_PREFIX}bot_alpha`] = scored1;
+
+    // Add bot_alpha and an un-persisted bot_beta to tab
+    await addTabDeflectedUsers(tabId, ['u/bot_alpha', 'u/bot_beta']);
+
+    const tabThreats = await getTabThreatUsers(tabId);
+    assert.strictEqual(tabThreats.length, 2);
+
+    const alpha = tabThreats.find((t) => t.username === 'bot_alpha');
+    assert.ok(alpha);
+    assert.strictEqual(alpha?.score, 90);
+    assert.strictEqual(alpha?.breakdown[0].name, 'Inhuman Velocity');
+
+    const beta = tabThreats.find((t) => t.username === 'bot_beta');
+    assert.ok(beta);
+    assert.strictEqual(beta?.classification, 'DEFLECT');
+  } finally {
+    await clearTabDeflections(tabId);
+    (globalThis as any).chrome = originalChrome;
+  }
+});
+
+test('SW-6: Recent Threat Users Retrieval filters expired, deduplicates, and sorts by evaluatedAt', async () => {
+  const originalChrome = (globalThis as any).chrome;
+  const mockStorage: Record<string, any> = {};
+
+  (globalThis as any).chrome = {
+    storage: {
+      local: {
+        get: async (keys: any) => {
+          if (keys === null) return { ...mockStorage };
+          const result: Record<string, any> = {};
+          const keyArray = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyArray) {
+            if (k in mockStorage) result[k] = mockStorage[k];
+          }
+          return result;
+        }
+      }
+    }
+  };
+
+  try {
+    const now = Date.now();
+
+    // Threat 1: Most recent
+    mockStorage[`${THREAT_CACHE_PREFIX}spambot_new`] = {
+      username: 'spambot_new',
+      score: 95,
+      classification: 'DEFLECT',
+      breakdown: [],
+      evaluatedAt: now - 1000
+    };
+
+    // Threat 2: Older but valid
+    mockStorage[`${THREAT_CACHE_PREFIX}spambot_old`] = {
+      username: 'spambot_old',
+      score: 80,
+      classification: 'DEFLECT',
+      breakdown: [],
+      evaluatedAt: now - 100000
+    };
+
+    // Threat 3: Expired threat (evaluated 30 days ago, TTL = 14 days)
+    mockStorage[`${THREAT_CACHE_PREFIX}spambot_expired`] = {
+      username: 'spambot_expired',
+      score: 85,
+      classification: 'DEFLECT',
+      breakdown: [],
+      evaluatedAt: now - (30 * 24 * 60 * 60 * 1000)
+    };
+
+    const recent = await getRecentThreatUsers(10);
+    assert.strictEqual(recent.length, 2);
+    assert.strictEqual(recent[0].username, 'spambot_new');
+    assert.strictEqual(recent[1].username, 'spambot_old');
+  } finally {
+    (globalThis as any).chrome = originalChrome;
+  }
+});
+

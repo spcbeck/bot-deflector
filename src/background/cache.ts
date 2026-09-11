@@ -356,3 +356,57 @@ export async function setSessionModhash(modhash: string, expiry: number): Promis
   await setSessionData(MODHASH_KEY, { modhash, expiry });
 }
 
+export async function getTabThreatUsers(tabId: number): Promise<ScoredUser[]> {
+  const usernames = await getTabDeflectedUsers(tabId);
+  if (usernames.length === 0) return [];
+  const batch = await getCachedUsersBatch(usernames);
+  const results: ScoredUser[] = [];
+  for (const name of usernames) {
+    const scored = batch.get(name);
+    if (scored) {
+      results.push(scored);
+    } else {
+      results.push({
+        username: name,
+        score: 85,
+        classification: 'DEFLECT',
+        breakdown: [
+          {
+            ruleId: 'tab_deflection',
+            category: 'syndicate',
+            name: 'Deflected Account',
+            points: 85,
+            description: 'Automated threat deflected on current page'
+          }
+        ],
+        evaluatedAt: Date.now()
+      });
+    }
+  }
+  return results.sort((a, b) => (b.evaluatedAt || 0) - (a.evaluatedAt || 0));
+}
+
+export async function getRecentThreatUsers(limit = 30): Promise<ScoredUser[]> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return [];
+  const all = await chrome.storage.local.get(null);
+  const threats: ScoredUser[] = [];
+  const seenUsernames = new Set<string>();
+  const now = Date.now();
+
+  for (const [key, value] of Object.entries(all)) {
+    if (key.startsWith(THREAT_CACHE_PREFIX)) {
+      const record = value as ScoredUser;
+      if (record && record.username && !isThreatRecordExpired(record, now)) {
+        const clean = record.username.toLowerCase();
+        if (!seenUsernames.has(clean)) {
+          seenUsernames.add(clean);
+          threats.push(record);
+        }
+      }
+    }
+  }
+
+  threats.sort((a, b) => (b.evaluatedAt || 0) - (a.evaluatedAt || 0));
+  return threats.slice(0, limit);
+}
+

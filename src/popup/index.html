@@ -53,6 +53,30 @@
       <span>Reddit 1,000 block quota reached. Falling back to local deflection.</span>
     </div>
 
+    <!-- Caught Bots Inspector Panel -->
+    <section class="bd-threats-panel">
+      <div class="bd-threats-header">
+        <div class="bd-threats-title-group">
+          <span class="bd-threats-title">CAUGHT THREATS</span>
+          <span class="bd-threats-count-badge" id="threats-badge">0</span>
+        </div>
+        <div class="bd-threats-tabs" id="threats-tab-selector">
+          <button class="bd-threats-tab-btn active" id="tab-btn-current" data-view="current">THIS TAB (0)</button>
+          <button class="bd-threats-tab-btn" id="tab-btn-recent" data-view="recent">ALL RECENT (0)</button>
+        </div>
+      </div>
+
+      <div class="bd-threats-container" id="threats-container">
+        <div class="bd-threats-list" id="threats-list">
+          <!-- Dynamically populated by popup.ts -->
+        </div>
+        <div class="bd-threats-empty" id="threats-empty">
+          <span class="bd-empty-icon">■</span>
+          <span class="bd-empty-text">NO BOTS CAUGHT YET &bull; FEED CLEAN</span>
+        </div>
+      </div>
+    </section>
+
     <!-- Controls & Heuristic Configuration -->
     <section class="bd-control-panel">
       <!-- Mode Toggle -->

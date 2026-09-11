@@ -95,6 +95,11 @@ export interface DeflectorStats {
 }
 
 // Runtime messaging protocols
+export interface CaughtBotsResponse {
+  tabBots: ScoredUser[];
+  recentBots: ScoredUser[];
+}
+
 export type BackgroundMessage =
   | { type: 'CHECK_USERS'; usernames: string[] }
   | { type: 'CHECK_SUBMISSION'; title: string; subreddit: string; author: string }
@@ -104,7 +109,8 @@ export type BackgroundMessage =
   | { type: 'UPDATE_SETTINGS'; settings: Partial<ExtensionSettings> }
   | { type: 'GET_STATS' }
   | { type: 'GET_TAB_STATS'; tabId?: number }
-  | { type: 'RECORD_DEFLECTION'; username: string; points: number }
+  | { type: 'GET_CAUGHT_BOTS'; tabId?: number }
+  | { type: 'RECORD_DEFLECTION'; username: string; points: number; breakdown?: ThreatRuleHit[] }
   | { type: 'ADD_WHITELIST'; username: string }
   | { type: 'REMOVE_WHITELIST'; username: string }
   | { type: 'INVALIDATE_USER'; username: string };
@@ -115,3 +121,4 @@ export type TabMessage =
 export type BackgroundResponse<T = unknown> =
   | { success: true; data: T }
   | { success: false; error: string };
+

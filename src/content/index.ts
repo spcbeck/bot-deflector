@@ -131,17 +131,23 @@ export class ContentOrchestrator {
 
       if (res?.isRepost && res?.originalPost) {
         this.historicalTopComments = res.historicalComments || [];
-        this.adapter.injectSubmissionWarning(
-          sub,
-          res.originalPost,
-          res.opScored || {
-            username: sub.author,
-            score: 85,
-            classification: 'DEFLECT',
-            breakdown: [],
-            evaluatedAt: Date.now()
-          }
-        );
+        const opScored: ScoredUser = res.opScored || {
+          username: sub.author,
+          score: 85,
+          classification: 'DEFLECT',
+          breakdown: [
+            {
+              ruleId: 'exact_title_repost',
+              category: 'submission',
+              name: 'Viral Title Repost',
+              points: 85,
+              description: 'Exact match with historical viral post'
+            }
+          ],
+          evaluatedAt: Date.now()
+        };
+        this.adapter.injectSubmissionWarning(sub, res.originalPost, opScored);
+        this.client.recordDeflection(opScored).catch(() => {});
       }
     } catch (err) {
       console.warn('[BotDeflector] Submission check error:', err);
@@ -195,6 +201,7 @@ export class ContentOrchestrator {
             ],
             evaluatedAt: Date.now()
           };
+          this.client.recordDeflection(syntheticScored).catch(() => {});
           this.adapter.collapseComment(
             c,
             syntheticScored,
@@ -245,6 +252,7 @@ export class ContentOrchestrator {
           classification: 'DEFLECT',
           breakdown: [...scored.breakdown, ...hits]
         };
+        this.client.recordDeflection(scored).catch(() => {});
       }
 
       if (scored.classification === 'DEFLECT') {

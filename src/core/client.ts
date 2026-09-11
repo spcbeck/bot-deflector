@@ -29,6 +29,7 @@ export interface DeflectorClient {
   addWhitelist(username: string): Promise<void>;
   blockUser(username: string): Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }>;
   invalidateUser(username: string): Promise<void>;
+  recordDeflection(scored: ScoredUser): Promise<void>;
   onUsersEvaluated(callback: (users: Record<string, ScoredUser>) => void): () => void;
 }
 
@@ -83,6 +84,15 @@ export class ExtensionBackendClient implements DeflectorClient {
     await chrome.runtime.sendMessage({
       type: 'INVALIDATE_USER',
       username
+    });
+  }
+
+  async recordDeflection(scored: ScoredUser): Promise<void> {
+    await chrome.runtime.sendMessage({
+      type: 'RECORD_DEFLECTION',
+      username: scored.username,
+      points: scored.score,
+      breakdown: scored.breakdown
     });
   }
 
@@ -159,6 +169,10 @@ export class UserscriptBackendClient implements DeflectorClient {
         localStorage.removeItem(key);
       }
     } catch {}
+  }
+
+  async recordDeflection(scored: ScoredUser): Promise<void> {
+    this.setCachedUser(scored);
   }
 
   onUsersEvaluated(_callback: (users: Record<string, ScoredUser>) => void): () => void {

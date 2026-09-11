@@ -7,9 +7,11 @@ import {
   clearTabDeflections,
   getCachedUser,
   getCachedUsersBatch,
+  getRecentThreatUsers,
   getSettings,
   getStats,
   getTabDeflectedCount,
+  getTabThreatUsers,
   incrementStats,
   invalidateCachedUser,
   setCachedUser,
@@ -227,6 +229,39 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
       if (!targetTabId) return { tabDeflectedCount: 0 };
       const count = await getTabDeflectedCount(targetTabId);
       return { tabDeflectedCount: count };
+    }
+
+    case 'GET_CAUGHT_BOTS': {
+      const targetTabId = message.tabId || sender.tab?.id;
+      const tabBots = targetTabId ? await getTabThreatUsers(targetTabId) : [];
+      const recentBots = await getRecentThreatUsers(30);
+      return { tabBots, recentBots };
+    }
+
+    case 'RECORD_DEFLECTION': {
+      const scored: ScoredUser = {
+        username: message.username,
+        score: message.points,
+        classification: 'DEFLECT',
+        breakdown: message.breakdown || [
+          {
+            ruleId: 'accomplice_comment_theft',
+            category: 'syndicate',
+            name: 'Accomplice Comment Hijacking',
+            points: message.points,
+            description: 'Word-for-word copy of top comment from original historical thread'
+          }
+        ],
+        evaluatedAt: Date.now()
+      };
+      await setCachedUser(scored);
+      await incrementStats({ deflected: 1 });
+      const tabId = sender.tab?.id;
+      if (tabId) {
+        const count = await addTabDeflectedUsers(tabId, [scored.username]);
+        await updateTabBadge(tabId, count);
+      }
+      return { success: true };
     }
 
     case 'ADD_WHITELIST': {
