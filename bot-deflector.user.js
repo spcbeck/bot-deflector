@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BotDeflector for Reddit
 // @namespace    https://github.com/spcbeck/bot-deflector
-// @version      1.3.0
+// @version      1.4.0
 // @description  Detects and stealthily deflects automated bots, viral repost farms, and hijacked comments across Reddit.
 // @author       spcbeck
 // @match        https://*.reddit.com/*
