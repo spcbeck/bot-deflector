@@ -41,9 +41,12 @@ export class OldRedditAdapter implements RedditAdapter {
       if (commentEl.dataset.bdProcessed === 'true') return;
 
       const author = commentEl.getAttribute('data-author') || '';
-      if (!author || author === '[deleted]') return;
+      if (!author || author === '[deleted]' || author === 'AutoModerator') return;
 
-      const id = commentEl.getAttribute('data-fullname') || commentEl.id || '';
+      const id =
+        commentEl.getAttribute('data-fullname') ||
+        commentEl.id ||
+        (commentEl.dataset.bdUid ||= `bd_oc_${Math.random().toString(36).slice(2, 10)}`);
       const bodyEl = commentEl.querySelector('div.usertext-body');
       const bodyText = bodyEl?.textContent?.trim() || '';
 
@@ -55,6 +58,35 @@ export class OldRedditAdapter implements RedditAdapter {
         isTopLevel: !commentEl.parentElement?.closest('.thing.comment')
       });
     });
+
+    const isThreadPage = typeof location !== 'undefined' && location.pathname.includes('/comments/');
+    if (!isThreadPage || elements.length === 0) {
+      const postElements = document.querySelectorAll('.thing.link');
+      postElements.forEach((el) => {
+        const postEl = el as HTMLElement;
+        if (postEl.dataset.bdProcessed === 'true') return;
+
+        const author =
+          postEl.getAttribute('data-author') ||
+          postEl.querySelector('a.author')?.textContent?.trim() ||
+          '';
+        if (!author || author === '[deleted]' || author === 'AutoModerator') return;
+
+        const id =
+          postEl.getAttribute('data-fullname') ||
+          postEl.id ||
+          (postEl.dataset.bdUid ||= `bd_op_${Math.random().toString(36).slice(2, 10)}`);
+        const titleText = postEl.querySelector('a.title')?.textContent?.trim() || '';
+
+        comments.push({
+          id,
+          author,
+          bodyText: titleText,
+          element: postEl,
+          isTopLevel: true
+        });
+      });
+    }
 
     return comments;
   }

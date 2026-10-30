@@ -71,21 +71,21 @@ export function shouldDrilldownComments(
   const clean = username.replace(/^u\//, '').trim();
   const ageDays = (nowUtc - profile.createdUtc) / 86400;
 
-  // 1. Young accounts (< 60 days): require behavioral check to distinguish organic newcomers from rapid-fire bots
-  if (ageDays < 60) return true;
+  // 1. Accounts under 1 year old or under 2,500 total karma: inspect comment history
+  if (ageDays < 365 || profile.totalKarma < 2500) return true;
 
-  // 2. Aged sleeper candidates (60 to 1500 days old with low karma)
-  if (ageDays >= 60 && ageDays <= 1500 && profile.totalKarma < 500) return true;
+  // 2. Aged sleeper candidates (up to 1500 days old with low karma)
+  if (ageDays <= 1500 && profile.totalKarma < 1000) return true;
 
   // 3. Extreme link-to-comment karma asymmetry
-  if (profile.linkKarma > 5000 && profile.commentKarma < 50) return true;
-  if (profile.linkKarma > 10000 && profile.linkKarma / Math.max(1, profile.commentKarma) > 150) return true;
+  if (profile.linkKarma >= 1000 && profile.commentKarma < 50) return true;
+  if (profile.linkKarma >= 2500 && profile.linkKarma / Math.max(1, profile.commentKarma) > 50) return true;
 
   // 4. Ghost karma / scrubbed history candidates
   if (profile.commentKarma > 1000 && (profile.totalKarma <= 5000 || AUTO_USERNAME_REGEX.test(clean))) return true;
 
-  // 5. Auto-generated username without veteran karma safe harbor
-  if (AUTO_USERNAME_REGEX.test(clean) && profile.totalKarma <= 2000) return true;
+  // 5. Auto-generated username
+  if (AUTO_USERNAME_REGEX.test(clean)) return true;
 
   // 6. Negative reputation
   if (profile.totalKarma < 0) return true;
@@ -385,6 +385,7 @@ export function scoreUser(
   const circumstantialRuleIds = new Set([
     'fresh_account_48h',
     'young_account_14d',
+    'young_account_45d',
     'auto_generated_username',
     'low_karma_baseline',
     'unverified_email_account'

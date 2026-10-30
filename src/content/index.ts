@@ -1,6 +1,7 @@
 import { DeflectorClient, ExtensionBackendClient } from '../core/client';
 import {
   evaluateMerchSpam,
+  evaluateScriptHomoglyphBleed,
   evaluateUnescapedEntities,
   isStolenCommentMatch
 } from '../engine/heuristics';
@@ -41,30 +42,34 @@ export class ContentOrchestrator {
 
     console.log(`[BotDeflector] Active Adapter: ${this.adapter.name}`);
 
-    // Load initial settings
-    await this.refreshSettings();
-
-    // 1. Check Submission (OP & Repost Archival Search)
-    await this.evaluateSubmission();
-
-    // 2. Scan visible comments
-    await this.scanComments();
-
-    // 3. Listen for streaming background evaluations
+    // 1. Register streaming background evaluation listener immediately before any async work
     this.client.onUsersEvaluated((newlyScored) => {
       if (!this.adapter) return;
       const allComments = this.adapter.findComments();
       this.applyScoredResults(allComments, newlyScored);
     });
 
-    // 4. Attach MutationObserver for dynamically loaded comments (infinite scroll)
+    // 2. Attach MutationObserver for dynamically loaded comments/posts (infinite scroll)
     this.adapter.observe(() => {
       this.checkRouteUrl();
       this.debouncedScan();
     });
 
-    // 5. Watch for Single Page Application (SPA) history navigation on Reddit
+    // 3. Watch for Single Page Application (SPA) history navigation on Reddit
     this.initSpaNavigationWatcher();
+
+    // 4. Load initial settings
+    await this.refreshSettings();
+
+    // 5. Check Submission (OP & Repost Archival Search) in parallel without blocking comment/feed scan
+    void this.evaluateSubmission();
+
+    // 6. Scan visible comments & feed posts immediately, plus follow-up sweeps for delayed Shreddit hydration
+    await this.scanComments();
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => this.debouncedScan(), 1200);
+      window.setTimeout(() => this.debouncedScan(), 3000);
+    }
   }
 
   private initSpaNavigationWatcher(): void {
@@ -135,6 +140,9 @@ export class ContentOrchestrator {
 
   private async evaluateSubmission(): Promise<void> {
     if (!this.adapter) return;
+    if (typeof location !== 'undefined' && !location.pathname.includes('/comments/')) {
+      return;
+    }
     const sub = this.adapter.extractSubmission();
     if (!sub) return;
 
@@ -266,9 +274,10 @@ export class ContentOrchestrator {
       // check current comment body for hard scraper artifacts or merch spam links
       const unescapedHit = evaluateUnescapedEntities(c.bodyText);
       const merchHit = evaluateMerchSpam(c.bodyText);
+      const homoglyphHit = evaluateScriptHomoglyphBleed([], '', c.bodyText, '');
 
-      if (scored.classification !== 'DEFLECT' && (unescapedHit || merchHit)) {
-        const hits = [unescapedHit, merchHit].filter(Boolean) as NonNullable<typeof unescapedHit>[];
+      if (scored.classification !== 'DEFLECT' && (unescapedHit || merchHit || homoglyphHit)) {
+        const hits = [unescapedHit, merchHit, homoglyphHit].filter(Boolean) as NonNullable<typeof unescapedHit>[];
         const addedPoints = hits.reduce((sum, h) => sum + h.points, 0);
         const threshold = this.activeSettings?.deflectThreshold ?? 70;
         this.client.invalidateUser(c.author).catch(() => {});

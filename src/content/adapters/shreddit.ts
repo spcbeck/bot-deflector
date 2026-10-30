@@ -29,16 +29,24 @@ export class ShredditAdapter implements RedditAdapter {
 
   findComments(): RedditCommentElement[] {
     const comments: RedditCommentElement[] = [];
-    const elements = document.querySelectorAll('shreddit-comment');
 
-    elements.forEach((el) => {
+    // 1. Collect all <shreddit-comment> elements on thread pages
+    const commentElements = document.querySelectorAll('shreddit-comment');
+    commentElements.forEach((el) => {
       const commentEl = el as HTMLElement;
       if (commentEl.dataset.bdProcessed === 'true') return;
 
-      const author = commentEl.getAttribute('author') || '';
-      if (!author || author === '[deleted]') return;
+      const author =
+        commentEl.getAttribute('author') ||
+        commentEl.querySelector('a[href*="/user/"]')?.textContent?.replace(/^u\//, '').trim() ||
+        '';
+      if (!author || author === '[deleted]' || author === 'AutoModerator') return;
 
-      const id = commentEl.getAttribute('thingid') || commentEl.id || '';
+      const id =
+        commentEl.getAttribute('thingid') ||
+        commentEl.id ||
+        commentEl.getAttribute('permalink') ||
+        (commentEl.dataset.bdUid ||= `bd_c_${Math.random().toString(36).slice(2, 10)}`);
       const bodySlot = commentEl.querySelector('div[slot="comment"]') || commentEl;
       const bodyText = bodySlot.textContent?.trim() || '';
 
@@ -51,6 +59,43 @@ export class ShredditAdapter implements RedditAdapter {
       });
     });
 
+    // 2. Also collect <shreddit-post> elements (enables full scanning on Home/Popular/Subreddit feeds)
+    const isThreadPage = typeof location !== 'undefined' && location.pathname.includes('/comments/');
+    if (!isThreadPage || commentElements.length === 0) {
+      const postElements = document.querySelectorAll('shreddit-post');
+      postElements.forEach((el) => {
+        const postEl = el as HTMLElement;
+        if (postEl.dataset.bdProcessed === 'true') return;
+
+        const author =
+          postEl.getAttribute('author') ||
+          postEl.getAttribute('author-name') ||
+          postEl.querySelector('a[href*="/user/"]')?.textContent?.replace(/^u\//, '').trim() ||
+          '';
+        if (!author || author === '[deleted]' || author === 'AutoModerator') return;
+
+        const id =
+          postEl.getAttribute('id') ||
+          postEl.getAttribute('thingid') ||
+          postEl.getAttribute('permalink') ||
+          (postEl.dataset.bdUid ||= `bd_p_${Math.random().toString(36).slice(2, 10)}`);
+        const titleText =
+          postEl.getAttribute('post-title') ||
+          postEl.querySelector('[slot="title"], h1, h2')?.textContent?.trim() ||
+          '';
+        const bodySlotText = postEl.querySelector('[slot="text-body"]')?.textContent?.trim() || '';
+        const bodyText = [titleText, bodySlotText].filter(Boolean).join(' ');
+
+        comments.push({
+          id,
+          author,
+          bodyText,
+          element: postEl,
+          isTopLevel: true
+        });
+      });
+    }
+
     return comments;
   }
 
@@ -62,16 +107,23 @@ export class ShredditAdapter implements RedditAdapter {
     onBlock?: () => Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }> | void
   ): void {
     const el = comment.element;
+    if (el.dataset.bdDeflected === 'true') return;
     el.dataset.bdProcessed = 'true';
     el.dataset.bdDeflected = 'true';
 
-    // Shreddit supports the collapsed attribute natively
-    el.setAttribute('collapsed', '');
+    const isPost = el.tagName.toLowerCase() === 'shreddit-post';
+    if (isPost) {
+      el.classList.add('bd-hidden-content');
+    } else {
+      el.setAttribute('collapsed', '');
+      el.classList.add('bd-hidden-content');
+    }
 
     const bar = createDeflectionBar(
       scored,
       () => {
         el.removeAttribute('collapsed');
+        el.classList.remove('bd-hidden-content');
         el.dataset.bdDeflected = 'false';
         onRestore();
       },
@@ -79,7 +131,11 @@ export class ShredditAdapter implements RedditAdapter {
       onBlock
     );
 
-    el.prepend(bar);
+    if (el.parentElement) {
+      el.parentElement.insertBefore(bar, el);
+    } else {
+      el.prepend(bar);
+    }
   }
 
   injectSubmissionWarning(
@@ -87,9 +143,14 @@ export class ShredditAdapter implements RedditAdapter {
     originalPost: RedditSubmission,
     opScored: ScoredUser
   ): void {
+    if (submission.element.parentElement?.querySelector('.bd-submission-banner')) return;
     if (submission.element.querySelector('.bd-submission-banner')) return;
     const banner = createSubmissionRepostBanner(originalPost, opScored);
-    submission.element.prepend(banner);
+    if (submission.element.parentElement) {
+      submission.element.parentElement.insertBefore(banner, submission.element);
+    } else {
+      submission.element.prepend(banner);
+    }
   }
 
   observe(callback: () => void): MutationObserver {

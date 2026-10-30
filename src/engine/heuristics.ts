@@ -106,13 +106,21 @@ export function evaluateAccountAge(createdUtc: number, nowUtc = Math.floor(Date.
       points: 20,
       description: `Account created ${Math.round(ageDays)} days ago`
     };
+  } else if (ageDays < 45) {
+    return {
+      ruleId: 'young_account_45d',
+      category: 'profile',
+      name: 'Recent Account (< 45 Days)',
+      points: 10,
+      description: `Account created ${Math.round(ageDays)} days ago`
+    };
   }
   return null;
 }
 
 /**
  * 5. Check for Aged Sleeper Gap
- * Account created > 180 days ago, total karma < 100, but all recent visible activity is within the last 72 hours
+ * Account created > 60 days ago with low karma where all recent visible activity started after long dormancy
  */
 export function evaluateSleeperGap(
   createdUtc: number,
@@ -123,12 +131,12 @@ export function evaluateSleeperGap(
   if (!createdUtc || comments.length === 0) return null;
   const ageDays = (nowUtc - createdUtc) / 86400;
 
-  if (ageDays > 180 && totalKarma < 100) {
-    // Check if all visible comments were posted within the last 72 hours
+  if (ageDays > 60 && totalKarma < 500) {
     const oldestCommentUtc = Math.min(...comments.map((c) => c.createdUtc));
     const hoursSinceOldest = (nowUtc - oldestCommentUtc) / 3600;
+    const activeDaysRatio = (hoursSinceOldest / 24) / ageDays;
 
-    if (hoursSinceOldest <= 72) {
+    if (hoursSinceOldest <= 336 && activeDaysRatio < 0.15) {
       return {
         ruleId: 'aged_sleeper_gap',
         category: 'dormancy',
@@ -143,10 +151,10 @@ export function evaluateSleeperGap(
 
 /**
  * 6. Extreme Post-to-Comment Karma Asymmetry
- * Automated repost bots farm massive link karma with 0 conversation
+ * Automated repost bots farm massive link karma with minimal conversation
  */
 export function evaluateKarmaAsymmetry(linkKarma: number, commentKarma: number): ThreatRuleHit | null {
-  if (linkKarma > 5000 && commentKarma < 25) {
+  if (linkKarma >= 1000 && commentKarma < 25) {
     return {
       ruleId: 'extreme_karma_asymmetry',
       category: 'karma',
@@ -155,7 +163,7 @@ export function evaluateKarmaAsymmetry(linkKarma: number, commentKarma: number):
       description: `High post karma (${linkKarma}) with near-zero comment karma (${commentKarma})`
     };
   }
-  if (linkKarma > 10000 && (linkKarma / Math.max(1, commentKarma)) > 150) {
+  if (linkKarma >= 2500 && (linkKarma / Math.max(1, commentKarma)) > 50) {
     return {
       ruleId: 'extreme_karma_asymmetry',
       category: 'karma',
@@ -222,6 +230,24 @@ export function evaluateVelocityCadence(comments: RedditCommentActivity[]): Thre
       description: `Rapid-fire comments (median ${Math.round(medianInterval)}s apart) across ${distinctSubs.size} distinct subreddits`
     };
   }
+
+  // Also check for any 5-comment rapid burst (< 300s total span) across >= 3 subreddits
+  for (let i = 0; i <= sorted.length - 5; i++) {
+    const windowSpan = sorted[i].createdUtc - sorted[i + 4].createdUtc;
+    if (windowSpan > 0 && windowSpan <= 300) {
+      const windowSubs = new Set(sorted.slice(i, i + 5).map((c) => c.subreddit.toLowerCase()));
+      if (windowSubs.size >= 3) {
+        return {
+          ruleId: 'inhuman_velocity_cadence',
+          category: 'cadence',
+          name: 'Inhuman Multi-Subreddit Burst Cadence',
+          points: 45,
+          description: `Posted 5 comments in ${Math.round(windowSpan)}s across ${windowSubs.size} distinct subreddits`
+        };
+      }
+    }
+  }
+
   return null;
 }
 
@@ -282,14 +308,16 @@ export function evaluateDialogueReciprocity(comments: RedditCommentActivity[]): 
     };
   }
 
-  // If user has >= 15 comments and 100% are isolated single-shot threads
-  if (comments.length >= 15 && linkIdCounts.size === comments.length) {
+  // If user has >= 8 comments and >= 88% are isolated single-shot threads with <= 1 multi-turn thread
+  const uniqueRatio = linkIdCounts.size / comments.length;
+  if (comments.length >= 8 && uniqueRatio >= 0.88 && multiTurnThreads.length <= 1) {
+    const distinctSubs = new Set(comments.map((c) => (c.subreddit || '').toLowerCase())).size;
     return {
       ruleId: 'drive_by_dialogue_deficit',
       category: 'dialogue',
       name: 'Drive-By Dialogue Deficit',
-      points: 30,
-      description: 'Single isolated comments across 15+ threads with zero conversational replies'
+      points: distinctSubs >= 8 ? 35 : 30,
+      description: `Single isolated comments across ${linkIdCounts.size} threads (${distinctSubs} subreddits) with near-zero conversational replies`
     };
   }
 

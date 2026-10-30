@@ -5,6 +5,7 @@ import { blockRedditUser, fetchRedditBlockedUsers } from './blocker';
 import {
   addTabDeflectedUsers,
   clearTabDeflections,
+  ensureEngineCacheVersion,
   getBlockedUsersHistory,
   getCachedUser,
   getCachedUsersBatch,
@@ -72,10 +73,20 @@ export async function runScheduledBlocklistSync(): Promise<{
 // Lifecycle & Alarms Handlers
 // ---------------------------------------------------------------------------
 
+let engineMigrationPromise: Promise<number> | null = null;
+function ensureEngineMigrated(): Promise<number> {
+  if (!engineMigrationPromise) {
+    engineMigrationPromise = ensureEngineCacheVersion();
+  }
+  return engineMigrationPromise;
+}
+
 chrome.runtime.onInstalled.addListener(async (details) => {
   console.log(`[BotDeflector] Installed / Updated: ${details.reason}`);
   logger.info('BotDeflector background worker installed', { reason: details.reason });
+  await ensureEngineMigrated();
   await getSettings();
+  void runScheduledBlocklistSync();
 
   try {
     await chrome.alarms.create('cache_sweep_alarm', {
@@ -153,6 +164,7 @@ chrome.runtime.onMessage.addListener((message: BackgroundMessage, sender, sendRe
 });
 
 async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.MessageSender): Promise<any> {
+  await ensureEngineMigrated();
   const settings = await getSettings();
 
   switch (message.type) {
@@ -187,14 +199,14 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
 
       const tabId = sender.tab?.id;
 
-      // Update tab session and badge immediately for cached deflected accounts
+      // Update tab session and badge immediately for cached deflected or flagged accounts
       if (tabId) {
-        const deflectedCached = Object.values(results)
-          .filter((user) => user.classification === 'DEFLECT')
+        const threatsCached = Object.values(results)
+          .filter((user) => user.classification === 'DEFLECT' || user.classification === 'FLAG')
           .map((u) => u.username);
 
-        if (deflectedCached.length > 0) {
-          const count = await addTabDeflectedUsers(tabId, deflectedCached);
+        if (threatsCached.length > 0) {
+          const count = await addTabDeflectedUsers(tabId, threatsCached);
           await updateTabBadge(tabId, count);
         }
       }
@@ -231,16 +243,25 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
         getKnownBotSet()
       ]);
       let topComments: string[] = [];
+      let opComments: RedditCommentActivity[] = [];
 
       if (historicalPost) {
         topComments = await fetchHistoricalTopComments(historicalPost.id);
+      }
+
+      if (
+        opProfile &&
+        settings.enableCadenceCheck &&
+        shouldDrilldownComments(message.author, opProfile, settings.whitelist)
+      ) {
+        opComments = await fetchUserComments(message.author).catch(() => []);
       }
 
       const cleanAuthor = message.author.replace(/^u\//, '').trim().toLowerCase();
       const opScored = scoreUser(
         message.author,
         opProfile || undefined,
-        undefined,
+        opComments,
         undefined,
         message.title,
         {
@@ -252,6 +273,18 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
           userWhitelist: settings.whitelist
         }
       );
+
+      await setCachedUser(opScored);
+      await incrementStats({
+        scanned: 1,
+        deflected: opScored.classification === 'DEFLECT' ? 1 : 0
+      });
+
+      const tabId = sender.tab?.id;
+      if (tabId && (opScored.classification === 'DEFLECT' || opScored.classification === 'FLAG')) {
+        const count = await addTabDeflectedUsers(tabId, [opScored.username]);
+        await updateTabBadge(tabId, count);
+      }
 
       return {
         isRepost: Boolean(historicalPost),
@@ -493,7 +526,7 @@ async function processUncachedUsers(
 
       // Update badge and push to tab immediately when a threat is detected or micro-batch reaches 4
       if (tabId) {
-        if (scored.classification === 'DEFLECT') {
+        if (scored.classification === 'DEFLECT' || scored.classification === 'FLAG') {
           const count = await addTabDeflectedUsers(tabId, [scored.username]);
           await updateTabBadge(tabId, count);
         }

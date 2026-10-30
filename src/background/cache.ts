@@ -8,6 +8,8 @@ import {
 export const CLEAN_CACHE_PREFIX = 'clean_user_';
 export const THREAT_CACHE_PREFIX = 'threat_user_';
 export const LEGACY_CACHE_PREFIX = 'user_cache_';
+export const ENGINE_SCHEMA_KEY = 'deflector_engine_schema_version';
+export const CURRENT_ENGINE_SCHEMA_VERSION = 2;
 const SETTINGS_KEY = 'deflector_settings';
 const STATS_KEY = 'deflector_stats';
 
@@ -280,6 +282,38 @@ export async function sweepExpiredCacheRecords(now = Date.now()): Promise<{ scan
   }
 
   return { scanned, removed: keysToRemove.length };
+}
+
+/**
+ * Purges cached CLEAN user records when the heuristic engine version upgrades,
+ * ensuring previously cached accounts are re-evaluated under new detection rules.
+ */
+export async function ensureEngineCacheVersion(): Promise<number> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return 0;
+  try {
+    const res = await chrome.storage.local.get(ENGINE_SCHEMA_KEY);
+    const storedVersion = res[ENGINE_SCHEMA_KEY] as number | undefined;
+    if (storedVersion === CURRENT_ENGINE_SCHEMA_VERSION) {
+      return 0;
+    }
+
+    const all = await chrome.storage.local.get(null);
+    const keysToPurge = Object.keys(all).filter(
+      (k) => k.startsWith(CLEAN_CACHE_PREFIX) || k.startsWith(LEGACY_CACHE_PREFIX)
+    );
+
+    if (keysToPurge.length > 0) {
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < keysToPurge.length; i += BATCH_SIZE) {
+        await chrome.storage.local.remove(keysToPurge.slice(i, i + BATCH_SIZE));
+      }
+    }
+
+    await chrome.storage.local.set({ [ENGINE_SCHEMA_KEY]: CURRENT_ENGINE_SCHEMA_VERSION });
+    return keysToPurge.length;
+  } catch {
+    return 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
