@@ -70,7 +70,7 @@ In the Developer Dashboard's **Privacy Practices** tab:
    * **Does the extension transmit data to third-party servers?** **NO.**
    * Check: *"I certify that this extension does not collect or transmit user data outside the user's device."*
 3. **Privacy Policy URL:**
-   > Host a simple static markdown privacy policy or GitHub repository README linking to the local privacy section.
+   > `https://github.com/spcbeck/bot-deflector/blob/main/PRIVACY.md`
 
 ---
 
@@ -79,9 +79,8 @@ In the Developer Dashboard's **Privacy Practices** tab:
 - [x] **16x16 Extension Icon:** `public/icons/icon-16.png`
 - [x] **48x48 Extension Icon:** `public/icons/icon-48.png`
 - [x] **128x128 Extension Icon:** `public/icons/icon-128.png`
-- [ ] **Store Screenshot (Required by Google):**
-  - Minimum 1 screenshot at `1280x800px` or `640x400px` showing the Bauhaus popup dashboard and a deflected comment on Reddit.
-- [ ] **Small Promo Tile (Optional):** `440x280px`
+- [x] **Store Screenshot (Required by Google):** `store-assets/screenshot-1280x800.png` (`1280x800px`, 24-bit RGB PNG, no alpha)
+- [x] **Small Promo Tile (Optional):** `store-assets/promo-tile-440x280.png` (`440x280px`, 24-bit RGB PNG, no alpha)
 - [ ] **Marquee Promo Tile (Optional):** `1400x560px`
 
 ---
