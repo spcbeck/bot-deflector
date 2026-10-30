@@ -144,6 +144,7 @@ export async function fetchRedditBlockedUsers(): Promise<RedditBlockedUserItem[]
         }
       }
 
+      results.sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
       return results;
     } catch (err) {
       console.warn('[BotDeflector Blocker] Error fetching Reddit blocked users:', err);

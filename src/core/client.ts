@@ -148,6 +148,9 @@ function setStoredValue<T>(key: string, value: T): void {
 export class UserscriptBackendClient implements DeflectorClient {
   private settings: ExtensionSettings = getStoredValue(USERSCRIPT_SETTINGS_KEY, DEFAULT_SETTINGS);
   private evaluatedListeners = new Set<(users: Record<string, ScoredUser>) => void>();
+  private pendingQueue: string[] = [];
+  private inFlight = new Set<string>();
+  private isDraining = false;
 
   async getSettings(): Promise<ExtensionSettings> {
     this.settings = getStoredValue(USERSCRIPT_SETTINGS_KEY, DEFAULT_SETTINGS);
@@ -286,66 +289,106 @@ export class UserscriptBackendClient implements DeflectorClient {
   }
 
   private async evaluateUncachedUsers(usernames: string[]): Promise<void> {
-    const knownBotSet = await this.getSyncedBotSet();
+    const toPrepend: string[] = [];
+    for (const raw of usernames) {
+      const clean = raw.replace(/^u\//, '').trim().toLowerCase();
+      if (!clean || clean === '[deleted]' || this.inFlight.has(clean)) continue;
 
-    for (const username of usernames) {
-      try {
-        const cleanName = username.replace(/^u\//, '').trim().toLowerCase();
-        let isKnownBot = knownBotSet.has(cleanName);
+      const idx = this.pendingQueue.indexOf(clean);
+      if (idx !== -1) {
+        this.pendingQueue.splice(idx, 1);
+      }
+      toPrepend.push(clean);
+    }
 
-        const profile = await fetchUserProfile(username);
-        let comments: RedditCommentActivity[] = [];
+    if (toPrepend.length > 0) {
+      this.pendingQueue.unshift(...toPrepend);
+      void this.drainPendingQueue();
+    }
+  }
 
-        if (profile && this.settings.enableCadenceCheck && shouldDrilldownComments(username, profile, this.settings.whitelist)) {
-          comments = await fetchUserComments(username);
+  private async drainPendingQueue(): Promise<void> {
+    if (this.isDraining) return;
+    this.isDraining = true;
+
+    try {
+      const knownBotSet = await this.getSyncedBotSet();
+
+      while (this.pendingQueue.length > 0) {
+        const cleanName = this.pendingQueue.shift();
+        if (!cleanName || this.inFlight.has(cleanName)) continue;
+
+        const alreadyCached = this.getCachedUser(cleanName);
+        if (alreadyCached) {
+          this.emitEvaluated({ [cleanName]: alreadyCached });
+          continue;
         }
 
-        let scored = scoreUser(
-          username,
-          profile || undefined,
-          comments,
-          undefined,
-          undefined,
-          {
-            deflectThreshold: this.settings.deflectThreshold,
-            flagThreshold: this.settings.flagThreshold,
-            userWhitelist: this.settings.whitelist,
-            isKnownBotDatabase: isKnownBot
-          }
-        );
+        this.inFlight.add(cleanName);
+        try {
+          let isKnownBot = knownBotSet.has(cleanName);
 
-        if (scored.classification === 'FLAG' && !isKnownBot) {
-          const confirmed = await checkBotBouncerUser(username);
-          if (confirmed) {
-            isKnownBot = true;
-            knownBotSet.add(cleanName);
-            scored = scoreUser(
-              username,
-              profile || undefined,
-              comments,
-              undefined,
-              undefined,
-              {
-                deflectThreshold: this.settings.deflectThreshold,
-                flagThreshold: this.settings.flagThreshold,
-                userWhitelist: this.settings.whitelist,
-                isKnownBotDatabase: true
-              }
-            );
+          const profile = await fetchUserProfile(cleanName);
+          let comments: RedditCommentActivity[] = [];
+
+          if (profile && this.settings.enableCadenceCheck && shouldDrilldownComments(cleanName, profile, this.settings.whitelist)) {
+            comments = await fetchUserComments(cleanName, true);
           }
+
+          let scored = scoreUser(
+            cleanName,
+            profile || undefined,
+            comments,
+            undefined,
+            undefined,
+            {
+              deflectThreshold: this.settings.deflectThreshold,
+              flagThreshold: this.settings.flagThreshold,
+              userWhitelist: this.settings.whitelist,
+              isKnownBotDatabase: isKnownBot
+            }
+          );
+
+          if (scored.classification === 'FLAG' && !isKnownBot) {
+            const confirmed = await checkBotBouncerUser(cleanName, true);
+            if (confirmed) {
+              isKnownBot = true;
+              knownBotSet.add(cleanName);
+              scored = scoreUser(
+                cleanName,
+                profile || undefined,
+                comments,
+                undefined,
+                undefined,
+                {
+                  deflectThreshold: this.settings.deflectThreshold,
+                  flagThreshold: this.settings.flagThreshold,
+                  userWhitelist: this.settings.whitelist,
+                  isKnownBotDatabase: true
+                }
+              );
+            }
+          }
+
+          if (scored.classification === 'DEFLECT' && this.settings.autoBlockReddit && !scored.isBlockedOnReddit) {
+            const blockRes = await blockRedditUser(cleanName);
+            if (blockRes.success) {
+              scored.isBlockedOnReddit = true;
+            }
+          }
+
+          this.setCachedUser(scored);
+          this.emitEvaluated({ [cleanName]: scored });
+        } catch (err) {
+          console.warn(`[BotDeflector Userscript] Could not evaluate ${cleanName}:`, err);
+        } finally {
+          this.inFlight.delete(cleanName);
         }
-
-        if (scored.classification === 'DEFLECT' && this.settings.autoBlockReddit && !scored.isBlockedOnReddit) {
-          const blockRes = await blockRedditUser(username);
-          if (blockRes.success) {
-            scored.isBlockedOnReddit = true;
-          }
-        }
-
-        this.setCachedUser(scored);
-        this.emitEvaluated({ [username.toLowerCase()]: scored });
-      } catch (err) {
-        console.warn(`[BotDeflector Userscript] Could not evaluate ${username}:`, err);
+      }
+    } finally {
+      this.isDraining = false;
+      if (this.pendingQueue.length > 0) {
+        void this.drainPendingQueue();
       }
     }
   }

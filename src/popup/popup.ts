@@ -101,6 +101,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const hasThreatChange = Object.keys(changes).some((k) => k.startsWith('threat_user_'));
         if (hasThreatChange) {
           loadCaughtBots();
+          loadBlockedUsers(false);
+        } else if (changes['reddit_blocked_history']) {
+          loadBlockedUsers(false);
         }
       }
       if (areaName === 'session') {

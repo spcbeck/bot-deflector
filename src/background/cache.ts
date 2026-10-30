@@ -1,4 +1,5 @@
 import {
+  BlockedUserRecord,
   CompactCleanRecord,
   DeflectorStats,
   ExtensionSettings,
@@ -471,7 +472,80 @@ export async function getBlockedUsersHistory(): Promise<{ username: string; date
 
 export async function saveBlockedUsersHistory(blockedUsers: { username: string; date?: number }[]): Promise<void> {
   if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
-  await chrome.storage.local.set({ [REDDIT_BLOCKED_HISTORY_KEY]: blockedUsers });
+  const sorted = [...blockedUsers].sort((a, b) => (b.date ?? 0) - (a.date ?? 0));
+  await chrome.storage.local.set({ [REDDIT_BLOCKED_HISTORY_KEY]: sorted });
+}
+
+export async function addBlockedUserToHistory(username: string, date = Date.now()): Promise<void> {
+  const clean = username.replace(/^u\//, '').trim();
+  if (!clean) return;
+  const history = await getBlockedUsersHistory();
+  const lower = clean.toLowerCase();
+  const existingIdx = history.findIndex((h) => h.username.toLowerCase() === lower);
+  if (existingIdx >= 0) {
+    history[existingIdx].date = history[existingIdx].date || date;
+  } else {
+    history.unshift({ username: clean, date });
+  }
+  await saveBlockedUsersHistory(history);
+}
+
+export async function getEnrichedBlockedUsers(
+  historyInput?: { username: string; date?: number }[]
+): Promise<BlockedUserRecord[]> {
+  const history = historyInput ?? (await getBlockedUsersHistory());
+  const byUsername = new Map<string, { username: string; date?: number }>();
+
+  for (const item of history) {
+    const clean = item.username.replace(/^u\//, '').trim();
+    if (!clean) continue;
+    const lower = clean.toLowerCase();
+    const existing = byUsername.get(lower);
+    if (!existing || (item.date ?? 0) > (existing.date ?? 0)) {
+      byUsername.set(lower, { username: clean, date: item.date });
+    }
+  }
+
+  // Include locally cached threat accounts marked as blocked on Reddit even if not yet synced from /prefs/blocked.json
+  const recentThreats = await getRecentThreatUsers(500);
+  for (const threat of recentThreats) {
+    if (threat.isBlockedOnReddit && threat.username) {
+      const clean = threat.username.replace(/^u\//, '').trim();
+      const lower = clean.toLowerCase();
+      if (!byUsername.has(lower)) {
+        byUsername.set(lower, { username: clean, date: threat.evaluatedAt });
+      }
+    }
+  }
+
+  const allItems = Array.from(byUsername.values());
+  const usernames = allItems.map((h) => h.username);
+  const batch = await getCachedUsersBatch(usernames);
+
+  const enriched: BlockedUserRecord[] = allItems.map((item) => {
+    const clean = item.username.toLowerCase();
+    const scored = batch.get(clean);
+    const hasThreatScore = Boolean(scored && (scored.classification !== 'CLEAN' || scored.breakdown.length > 0));
+    return {
+      username: item.username,
+      date: item.date ?? (hasThreatScore ? scored?.evaluatedAt : undefined),
+      scoredUser: hasThreatScore ? scored : undefined
+    };
+  });
+
+  // Prioritize accounts with a BotDeflector heuristic breakdown first, then sort newest-first
+  enriched.sort((a, b) => {
+    const aHasBreakdown = Boolean(a.scoredUser && a.scoredUser.breakdown.some((r) => r.points > 0));
+    const bHasBreakdown = Boolean(b.scoredUser && b.scoredUser.breakdown.some((r) => r.points > 0));
+    if (aHasBreakdown !== bHasBreakdown) {
+      return aHasBreakdown ? -1 : 1;
+    }
+    const aTime = a.date ?? a.scoredUser?.evaluatedAt ?? 0;
+    const bTime = b.date ?? b.scoredUser?.evaluatedAt ?? 0;
+    return bTime - aTime;
+  });
+
+  return enriched;
 }
 
 // ---------------------------------------------------------------------------

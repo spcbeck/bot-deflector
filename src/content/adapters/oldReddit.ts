@@ -133,23 +133,27 @@ export class OldRedditAdapter implements RedditAdapter {
 
   observe(callback: () => void): MutationObserver {
     const observer = new MutationObserver((mutations) => {
-      let hasNewComments = false;
+      let hasNewItems = false;
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-          if (node instanceof HTMLElement && (node.classList.contains('comment') || node.querySelector('.comment'))) {
-            hasNewComments = true;
+          if (
+            node instanceof HTMLElement &&
+            (node.classList.contains('comment') ||
+              node.classList.contains('link') ||
+              node.querySelector('.comment, .link'))
+          ) {
+            hasNewItems = true;
             break;
           }
         }
-        if (hasNewComments) break;
+        if (hasNewItems) break;
       }
-      if (hasNewComments) {
+      if (hasNewItems) {
         callback();
       }
     });
 
-    const target = document.querySelector('.commentarea') || document.body;
-    observer.observe(target, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true });
     return observer;
   }
 }

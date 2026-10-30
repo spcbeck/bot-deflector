@@ -9,7 +9,12 @@ export class ViewportPrioritizer {
       (entries) => {
         for (const entry of entries) {
           const el = entry.target as HTMLElement;
-          const id = el.id || el.getAttribute('thingid') || el.getAttribute('data-fullname') || '';
+          const id =
+            el.dataset.bdObserveId ||
+            el.id ||
+            el.getAttribute('thingid') ||
+            el.getAttribute('data-fullname') ||
+            '';
           if (!id) continue;
 
           if (entry.isIntersecting) {
@@ -21,14 +26,27 @@ export class ViewportPrioritizer {
       },
       {
         root: null,
-        rootMargin: '200px', // Pre-load elements 200px before they scroll into view
-        threshold: 0.05
+        rootMargin: '250px', // Pre-load elements 250px before they scroll into view
+        threshold: 0.01
       }
     );
   }
 
   observeComment(comment: RedditCommentElement): void {
+    comment.element.dataset.bdObserveId = comment.id;
+    // Check immediate bounding box so elements currently in viewport are marked visible synchronously
+    if (typeof window !== 'undefined' && typeof comment.element.getBoundingClientRect === 'function') {
+      const rect = comment.element.getBoundingClientRect();
+      const vh = window.innerHeight || document.documentElement?.clientHeight || 800;
+      if (rect.bottom >= -250 && rect.top <= vh + 250) {
+        this.visibleElements.add(comment.id);
+      }
+    }
     this.observer.observe(comment.element);
+  }
+
+  isVisible(id: string): boolean {
+    return this.visibleElements.has(id);
   }
 
   sortPrioritized(comments: RedditCommentElement[]): RedditCommentElement[] {

@@ -1,14 +1,16 @@
 import { scoreUser, shouldDrilldownComments } from '../engine/scorer';
-import { BackgroundMessage, BlockedUserRecord, RedditCommentActivity, ScoredUser, TabMessage } from '../types';
+import { BackgroundMessage, RedditCommentActivity, ScoredUser, TabMessage } from '../types';
 import { logger } from '../core/logger';
 import { blockRedditUser, fetchRedditBlockedUsers } from './blocker';
 import {
+  addBlockedUserToHistory,
   addTabDeflectedUsers,
   clearTabDeflections,
   ensureEngineCacheVersion,
   getBlockedUsersHistory,
   getCachedUser,
   getCachedUsersBatch,
+  getEnrichedBlockedUsers,
   getKnownBotSet,
   getRecentThreatUsers,
   getSettings,
@@ -305,6 +307,7 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
       if (blockRes.success) {
         logger.info('Reddit user blocked', { username: message.username });
         await incrementStats({ blocked: 1 });
+        await addBlockedUserToHistory(message.username);
         const cached = await getCachedUser(message.username);
         if (cached) {
           cached.isBlockedOnReddit = true;
@@ -344,20 +347,7 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
         }
       }
 
-      // Cross-reference with threat cache to attach threat breakdown if available
-      const usernames = history.map((h) => h.username);
-      const batch = await getCachedUsersBatch(usernames);
-
-      const enriched: BlockedUserRecord[] = history.map((item) => {
-        const clean = item.username.toLowerCase();
-        const scored = batch.get(clean);
-        return {
-          username: item.username,
-          date: item.date,
-          scoredUser: scored || undefined
-        };
-      });
-
+      const enriched = await getEnrichedBlockedUsers(history);
       return { blocked: enriched };
     }
 
@@ -431,33 +421,66 @@ async function pushEvaluatedUsersToTab(tabId: number, batch: Record<string, Scor
   }
 }
 
-/**
- * Evaluates uncached users in the background with rate-limited requests,
- * saves to storage, updates tab session badge, and streams results progressively to the active tab.
- */
-async function processUncachedUsers(
-  usernames: string[],
+interface PendingUserTask {
+  cleanName: string;
+  tabIds: Set<number>;
+  promise: Promise<ScoredUser | null>;
+  resolve: (val: ScoredUser | null) => void;
+}
+
+const pendingEvaluationOrder: string[] = [];
+const pendingUserTasks = new Map<string, PendingUserTask>();
+const inFlightUserTasks = new Map<string, PendingUserTask>();
+let isDrainingScheduler = false;
+const tabPendingPushBatches = new Map<number, Record<string, ScoredUser>>();
+
+async function flushTabPushBatch(tabId: number): Promise<void> {
+  const batch = tabPendingPushBatches.get(tabId);
+  if (!batch || Object.keys(batch).length === 0) return;
+  tabPendingPushBatches.delete(tabId);
+  await pushEvaluatedUsersToTab(tabId, batch);
+}
+
+async function evaluateSingleUser(
+  cleanName: string,
   settings: Awaited<ReturnType<typeof getSettings>>,
-  tabId?: number
-): Promise<Record<string, ScoredUser>> {
-  const newlyScored: Record<string, ScoredUser> = {};
-  let pendingPushBatch: Record<string, ScoredUser> = {};
-  const knownBotSet = await getKnownBotSet();
+  knownBotSet: Set<string>
+): Promise<ScoredUser | null> {
+  // Double-check cache in case user was evaluated while waiting in queue
+  const alreadyCached = await getCachedUser(cleanName);
+  if (alreadyCached) return alreadyCached;
 
-  for (const username of usernames) {
-    try {
-      const cleanName = username.replace(/^u\//, '').trim().toLowerCase();
-      let isKnownBot = knownBotSet.has(cleanName);
+  let isKnownBot = knownBotSet.has(cleanName);
+  const profile = await fetchUserProfile(cleanName);
+  let comments: RedditCommentActivity[] = [];
 
-      const profile = await fetchUserProfile(username);
-      let comments: RedditCommentActivity[] = [];
+  if (profile && settings.enableCadenceCheck && shouldDrilldownComments(cleanName, profile, settings.whitelist)) {
+    comments = await fetchUserComments(cleanName, true);
+  }
 
-      if (profile && settings.enableCadenceCheck && shouldDrilldownComments(username, profile, settings.whitelist)) {
-        comments = await fetchUserComments(username);
-      }
+  let scored = scoreUser(
+    cleanName,
+    profile || undefined,
+    comments,
+    undefined,
+    undefined,
+    {
+      deflectThreshold: settings.deflectThreshold,
+      flagThreshold: settings.flagThreshold,
+      userWhitelist: settings.whitelist,
+      isKnownBotDatabase: isKnownBot
+    }
+  );
 
-      let scored = scoreUser(
-        username,
+  // For borderline FLAG accounts not yet in our local synced database, verify against r/BotBouncer on demand
+  if (scored.classification === 'FLAG' && !isKnownBot) {
+    const confirmedOnBotBouncer = await checkBotBouncerUser(cleanName, true);
+    if (confirmedOnBotBouncer) {
+      isKnownBot = true;
+      knownBotSet.add(cleanName);
+      await mergeKnownBots([cleanName]);
+      scored = scoreUser(
+        cleanName,
         profile || undefined,
         comments,
         undefined,
@@ -466,90 +489,174 @@ async function processUncachedUsers(
           deflectThreshold: settings.deflectThreshold,
           flagThreshold: settings.flagThreshold,
           userWhitelist: settings.whitelist,
-          isKnownBotDatabase: isKnownBot
+          isKnownBotDatabase: true
         }
       );
-
-      // For borderline FLAG accounts not yet in our local synced database, verify against r/BotBouncer on demand
-      if (scored.classification === 'FLAG' && !isKnownBot) {
-        const confirmedOnBotBouncer = await checkBotBouncerUser(username);
-        if (confirmedOnBotBouncer) {
-          isKnownBot = true;
-          knownBotSet.add(cleanName);
-          await mergeKnownBots([cleanName]);
-          scored = scoreUser(
-            username,
-            profile || undefined,
-            comments,
-            undefined,
-            undefined,
-            {
-              deflectThreshold: settings.deflectThreshold,
-              flagThreshold: settings.flagThreshold,
-              userWhitelist: settings.whitelist,
-              isKnownBotDatabase: true
-            }
-          );
-        }
-      }
-
-      // If user is deflected and auto-block is enabled, block them on Reddit
-      if (scored.classification === 'DEFLECT' && settings.autoBlockReddit && !scored.isBlockedOnReddit) {
-        const blockRes = await blockRedditUser(username);
-        if (blockRes.success) {
-          scored.isBlockedOnReddit = true;
-          logger.info('Reddit bot account auto-blocked', { username: scored.username });
-          await incrementStats({ blocked: 1 });
-        } else if (blockRes.quotaExceeded) {
-          logger.warn('Reddit auto-block quota exceeded', { username: scored.username });
-          await incrementStats({ quotaExceeded: true });
-        }
-      }
-
-      if (scored.classification === 'DEFLECT') {
-        logger.info('Reddit bot account deflected', {
-          username: scored.username,
-          score: scored.score,
-          breakdownCount: scored.breakdown.length,
-          rules: scored.breakdown.map((b) => b.name)
-        });
-      }
-
-      await setCachedUser(scored);
-      await incrementStats({
-        scanned: 1,
-        deflected: scored.classification === 'DEFLECT' ? 1 : 0
-      });
-
-      newlyScored[username] = scored;
-      pendingPushBatch[username] = scored;
-
-      // Update badge and push to tab immediately when a threat is detected or micro-batch reaches 4
-      if (tabId) {
-        if (scored.classification === 'DEFLECT' || scored.classification === 'FLAG') {
-          const count = await addTabDeflectedUsers(tabId, [scored.username]);
-          await updateTabBadge(tabId, count);
-        }
-
-        if (
-          scored.classification === 'DEFLECT' ||
-          scored.classification === 'FLAG' ||
-          Object.keys(pendingPushBatch).length >= 4
-        ) {
-          await pushEvaluatedUsersToTab(tabId, pendingPushBatch);
-          pendingPushBatch = {};
-        }
-      }
-    } catch (err) {
-      console.warn(`[BotDeflector] Could not evaluate ${username}:`, err);
-      logger.warn(`Could not evaluate user ${username}`, { error: String(err) });
     }
   }
 
-  // Flush any remaining newly evaluated users back to the sender tab
-  if (tabId && Object.keys(pendingPushBatch).length > 0) {
-    await pushEvaluatedUsersToTab(tabId, pendingPushBatch);
+  // If user is deflected and auto-block is enabled, block them on Reddit
+  if (scored.classification === 'DEFLECT' && settings.autoBlockReddit && !scored.isBlockedOnReddit) {
+    const blockRes = await blockRedditUser(cleanName);
+    if (blockRes.success) {
+      scored.isBlockedOnReddit = true;
+      logger.info('Reddit bot account auto-blocked', { username: scored.username });
+      await incrementStats({ blocked: 1 });
+      await addBlockedUserToHistory(scored.username);
+    } else if (blockRes.quotaExceeded) {
+      logger.warn('Reddit auto-block quota exceeded', { username: scored.username });
+      await incrementStats({ quotaExceeded: true });
+    }
   }
 
+  if (scored.classification === 'DEFLECT') {
+    logger.info('Reddit bot account deflected', {
+      username: scored.username,
+      score: scored.score,
+      breakdownCount: scored.breakdown.length,
+      rules: scored.breakdown.map((b) => b.name)
+    });
+  }
+
+  await setCachedUser(scored);
+  await incrementStats({
+    scanned: 1,
+    deflected: scored.classification === 'DEFLECT' ? 1 : 0
+  });
+
+  return scored;
+}
+
+async function drainEvaluationScheduler(): Promise<void> {
+  if (isDrainingScheduler) return;
+  isDrainingScheduler = true;
+
+  try {
+    while (pendingEvaluationOrder.length > 0) {
+      const nextClean = pendingEvaluationOrder.shift();
+      if (!nextClean) continue;
+
+      const task = pendingUserTasks.get(nextClean);
+      if (!task) continue;
+
+      pendingUserTasks.delete(nextClean);
+      inFlightUserTasks.set(nextClean, task);
+
+      try {
+        const [settings, knownBotSet] = await Promise.all([getSettings(), getKnownBotSet()]);
+        const scored = await evaluateSingleUser(nextClean, settings, knownBotSet);
+        task.resolve(scored);
+
+        if (scored) {
+          for (const tabId of task.tabIds) {
+            const batch = tabPendingPushBatches.get(tabId) || {};
+            batch[nextClean] = scored;
+            tabPendingPushBatches.set(tabId, batch);
+
+            if (scored.classification === 'DEFLECT' || scored.classification === 'FLAG') {
+              const count = await addTabDeflectedUsers(tabId, [scored.username]);
+              await updateTabBadge(tabId, count);
+            }
+
+            if (
+              scored.classification === 'DEFLECT' ||
+              scored.classification === 'FLAG' ||
+              Object.keys(batch).length >= 3 ||
+              pendingEvaluationOrder.length === 0
+            ) {
+              await flushTabPushBatch(tabId);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[BotDeflector] Could not evaluate ${nextClean}:`, err);
+        logger.warn(`Could not evaluate user ${nextClean}`, { error: String(err) });
+        task.resolve(null);
+      } finally {
+        inFlightUserTasks.delete(nextClean);
+      }
+    }
+
+    // Flush any remaining partial batches across all tabs
+    for (const tabId of Array.from(tabPendingPushBatches.keys())) {
+      await flushTabPushBatch(tabId);
+    }
+  } finally {
+    isDrainingScheduler = false;
+    if (pendingEvaluationOrder.length > 0) {
+      void drainEvaluationScheduler();
+    }
+  }
+}
+
+/**
+ * Schedules uncached users with viewport-front prioritization (newest scroll batch first),
+ * deduplicates concurrent requests, and streams results progressively to the active tab.
+ */
+async function processUncachedUsers(
+  usernames: string[],
+  _settings: Awaited<ReturnType<typeof getSettings>>,
+  tabId?: number
+): Promise<Record<string, ScoredUser>> {
+  const cleanList = Array.from(
+    new Set(
+      usernames
+        .map((u) => u.replace(/^u\//, '').trim().toLowerCase())
+        .filter((u) => u && u !== '[deleted]')
+    )
+  );
+
+  const taskPromises: Array<Promise<[string, ScoredUser | null]>> = [];
+  const toPrepend: string[] = [];
+
+  for (const cleanName of cleanList) {
+    const existingInFlight = inFlightUserTasks.get(cleanName);
+    if (existingInFlight) {
+      if (tabId !== undefined) existingInFlight.tabIds.add(tabId);
+      taskPromises.push(existingInFlight.promise.then((res) => [cleanName, res]));
+      continue;
+    }
+
+    let pendingTask = pendingUserTasks.get(cleanName);
+    if (!pendingTask) {
+      let resolveFn!: (val: ScoredUser | null) => void;
+      const promise = new Promise<ScoredUser | null>((resolve) => {
+        resolveFn = resolve;
+      });
+      pendingTask = {
+        cleanName,
+        tabIds: new Set<number>(),
+        promise,
+        resolve: resolveFn
+      };
+      pendingUserTasks.set(cleanName, pendingTask);
+    } else {
+      // Remove from old position so we can promote it to the front in the new viewport order
+      const idx = pendingEvaluationOrder.indexOf(cleanName);
+      if (idx !== -1) {
+        pendingEvaluationOrder.splice(idx, 1);
+      }
+    }
+
+    if (tabId !== undefined) {
+      pendingTask.tabIds.add(tabId);
+    }
+    toPrepend.push(cleanName);
+    taskPromises.push(pendingTask.promise.then((res) => [cleanName, res]));
+  }
+
+  if (toPrepend.length > 0) {
+    // Promote newest viewport-sorted batch to the front of the evaluation queue
+    pendingEvaluationOrder.unshift(...toPrepend);
+    void drainEvaluationScheduler();
+  }
+
+  const resolvedEntries = await Promise.all(taskPromises);
+  const newlyScored: Record<string, ScoredUser> = {};
+  for (const [name, scored] of resolvedEntries) {
+    if (scored) {
+      newlyScored[name] = scored;
+    }
+  }
   return newlyScored;
 }

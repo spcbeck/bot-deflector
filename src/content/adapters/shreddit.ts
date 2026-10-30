@@ -157,6 +157,16 @@ export class ShredditAdapter implements RedditAdapter {
     const observer = new MutationObserver((mutations) => {
       let hasRelevantChanges = false;
       for (const mutation of mutations) {
+        if (mutation.type === 'attributes') {
+          const target = mutation.target as HTMLElement;
+          const tag = target.tagName?.toLowerCase();
+          if (tag === 'shreddit-post' || tag === 'shreddit-comment') {
+            hasRelevantChanges = true;
+            break;
+          }
+          continue;
+        }
+
         for (const node of mutation.addedNodes) {
           if (node instanceof HTMLElement) {
             const tag = node.tagName.toLowerCase();
@@ -164,7 +174,11 @@ export class ShredditAdapter implements RedditAdapter {
               tag === 'shreddit-comment' ||
               tag === 'shreddit-post' ||
               tag === 'shreddit-comment-tree' ||
-              node.querySelector('shreddit-comment, shreddit-post')
+              tag === 'faceplate-batch' ||
+              tag === 'faceplate-partial' ||
+              tag === 'article' ||
+              node.querySelector('shreddit-comment, shreddit-post') ||
+              node.closest('shreddit-post:not([data-bd-processed="true"]), shreddit-comment:not([data-bd-processed="true"])')
             ) {
               hasRelevantChanges = true;
               break;
@@ -178,7 +192,12 @@ export class ShredditAdapter implements RedditAdapter {
       }
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['author', 'author-name', 'post-title']
+    });
     return observer;
   }
 }

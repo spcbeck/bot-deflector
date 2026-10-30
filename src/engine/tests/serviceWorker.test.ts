@@ -1,10 +1,12 @@
 import assert from 'node:assert';
 import test from 'node:test';
 import {
+  addBlockedUserToHistory,
   addTabDeflectedUsers,
   clearTabDeflections,
   CLEAN_CACHE_PREFIX,
   getBlockedUsersHistory,
+  getEnrichedBlockedUsers,
   getKnownBotSet,
   getRecentThreatUsers,
   getSessionModhash,
@@ -21,6 +23,7 @@ import {
   THREAT_CACHE_PREFIX
 } from '../../background/cache';
 import { parseBotBouncerListing } from '../../background/fetcher';
+import { RateLimitError, RequestQueue } from '../../background/rateLimiter';
 import { scoreUser } from '../scorer';
 import { CompactCleanRecord, RedditProfileData, ScoredUser } from '../../types';
 
@@ -454,5 +457,152 @@ test('SW-9: r/BotBouncer Listing Parser & Scheduled Known Bot Database Sync', as
     (globalThis as any).chrome = originalChrome;
   }
 });
+
+test('SW-10: Enriched Blocked Users prioritizes BotDeflector threat breakdowns and sorts newest-first', async () => {
+  const originalChrome = (globalThis as any).chrome;
+  const mockStorage: Record<string, any> = {};
+
+  (globalThis as any).chrome = {
+    storage: {
+      local: {
+        get: async (keys: any) => {
+          if (keys === null) return { ...mockStorage };
+          const result: Record<string, any> = {};
+          const keyArray = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyArray) {
+            if (k in mockStorage) result[k] = mockStorage[k];
+          }
+          return result;
+        },
+        set: async (items: Record<string, any>) => {
+          Object.assign(mockStorage, items);
+        }
+      }
+    }
+  };
+
+  try {
+    const now = Date.now();
+
+    // Historical Reddit blocks in chronological (oldest-first) order as returned by Reddit
+    await saveBlockedUsersHistory([
+      { username: 'NerdyRareGem', date: new Date('2023-05-12').getTime() },
+      { username: 'Lost-Letterhead879', date: new Date('2023-10-24').getTime() },
+      { username: 'RecentManualBlock', date: now - 60000 }
+    ]);
+
+    // BotDeflector caught & auto-blocked bot (in threat cache with breakdown)
+    const caughtBot: ScoredUser = {
+      username: 'CaughtBot_1',
+      score: 90,
+      classification: 'DEFLECT',
+      isBlockedOnReddit: true,
+      breakdown: [
+        { ruleId: 'cadence', category: 'cadence', name: 'Inhuman Velocity', points: 50, description: '' }
+      ],
+      evaluatedAt: now - 120000
+    };
+    mockStorage[`${THREAT_CACHE_PREFIX}caughtbot_1`] = caughtBot;
+
+    // Newly blocked user via addBlockedUserToHistory
+    await addBlockedUserToHistory('CaughtBot_2', now - 10000);
+    mockStorage[`${THREAT_CACHE_PREFIX}caughtbot_2`] = {
+      username: 'CaughtBot_2',
+      score: 85,
+      classification: 'DEFLECT',
+      isBlockedOnReddit: true,
+      breakdown: [
+        { ruleId: 'repost', category: 'submission', name: 'Exact Title Repost', points: 60, description: '' }
+      ],
+      evaluatedAt: now - 10000
+    } satisfies ScoredUser;
+
+    const enriched = await getEnrichedBlockedUsers();
+
+    // 1. Accounts with a BotDeflector breakdown appear at the very top (newest first)
+    assert.strictEqual(enriched[0].username, 'CaughtBot_2');
+    assert.ok(enriched[0].scoredUser);
+    assert.strictEqual(enriched[1].username, 'CaughtBot_1');
+    assert.ok(enriched[1].scoredUser);
+
+    // 2. Remaining manual Reddit blocks appear sorted newest-first (not 2023 oldest-first)
+    assert.strictEqual(enriched[2].username, 'RecentManualBlock');
+    assert.strictEqual(enriched[3].username, 'Lost-Letterhead879');
+    assert.strictEqual(enriched[4].username, 'NerdyRareGem');
+  } finally {
+    (globalThis as any).chrome = originalChrome;
+  }
+});
+
+test('SW-11: Adaptive RequestQueue predicts 429 from headers/burst, prioritizes tasks, and retries on 429', async () => {
+  const queue = new RequestQueue({ baseDelayMs: 5, maxRequestsPerMinute: 3 });
+  const now = 1_700_000_000_000;
+
+  // 1. Server header prediction: when x-ratelimit-remaining <= 1, pre-emptively wait until reset
+  queue.updateFromResponse(
+    {
+      headers: {
+        get: (name: string) => {
+          if (name === 'x-ratelimit-remaining') return '1';
+          if (name === 'x-ratelimit-reset') return '8';
+          return null;
+        }
+      }
+    },
+    now
+  );
+  assert.strictEqual(queue.getPredictiveWaitMs(now), 8000);
+
+  // 2. Smooth adaptive pacing when remaining is low (e.g. 5 remaining over 10 seconds -> ~1667ms spacing)
+  queue.updateFromResponse(
+    {
+      headers: {
+        get: (name: string) => {
+          if (name === 'x-ratelimit-remaining') return '5';
+          if (name === 'x-ratelimit-reset') return '10';
+          return null;
+        }
+      }
+    },
+    now
+  );
+  assert.strictEqual(queue.getPredictiveWaitMs(now), 0);
+  const adaptiveDelay = queue.getAdaptiveDelayMs(now);
+  assert.ok(adaptiveDelay >= 1500 && adaptiveDelay <= 2000, `Expected ~1667ms adaptive delay, got ${adaptiveDelay}`);
+
+  // 3. Priority execution & automatic retry on 429 without dropping task
+  const fastQueue = new RequestQueue({ baseDelayMs: 5, maxRequestsPerMinute: 100 });
+  const order: string[] = [];
+  let attempts = 0;
+
+  const p1 = fastQueue.enqueue(async () => {
+    order.push('first');
+    return 'ok1';
+  });
+  const pNormal = fastQueue.enqueue(async () => {
+    order.push('normal');
+    return 'okNormal';
+  });
+  const pPriority = fastQueue.enqueue(
+    async () => {
+      attempts++;
+      if (attempts === 1) {
+        order.push('priority-429');
+        throw new RateLimitError('HTTP 429', 10); // Will clamp to 2000ms min cooldown and retry
+      }
+      order.push('priority-recovered');
+      return 'okPriority';
+    },
+    { priority: true }
+  );
+
+  const [r1, rPriority, rNormal] = await Promise.all([p1, pPriority, pNormal]);
+  assert.strictEqual(r1, 'ok1');
+  assert.strictEqual(rPriority, 'okPriority');
+  assert.strictEqual(rNormal, 'okNormal');
+  assert.deepStrictEqual(order, ['first', 'priority-429', 'priority-recovered', 'normal']);
+});
+
+
 
 

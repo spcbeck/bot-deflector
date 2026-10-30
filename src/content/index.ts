@@ -17,10 +17,12 @@ export class ContentOrchestrator {
   private viewport = new ViewportPrioritizer();
   private historicalTopComments: string[] = [];
   private processedCommentIds = new Set<string>();
+  private evaluatedAuthors = new Set<string>();
   private activeSettings: ExtensionSettings | null = null;
   private isScanning = false;
   private pendingRescan = false;
   private lastUrl = typeof location !== 'undefined' ? location.pathname + location.search : '';
+  private hydrationSweepTimer: number | null = null;
 
   constructor(client: DeflectorClient = new ExtensionBackendClient()) {
     this.client = client;
@@ -53,7 +55,20 @@ export class ContentOrchestrator {
     this.adapter.observe(() => {
       this.checkRouteUrl();
       this.debouncedScan();
+      this.scheduleHydrationSweep();
     });
+
+    // 2b. Attach passive scroll listener to catch lazy-hydrated Shreddit feed posts and re-prioritize viewport
+    if (typeof window !== 'undefined') {
+      window.addEventListener(
+        'scroll',
+        () => {
+          this.debouncedScan(250);
+          this.scheduleHydrationSweep();
+        },
+        { passive: true }
+      );
+    }
 
     // 3. Watch for Single Page Application (SPA) history navigation on Reddit
     this.initSpaNavigationWatcher();
@@ -116,6 +131,7 @@ export class ContentOrchestrator {
     // Reset thread state for the new route
     this.historicalTopComments = [];
     this.processedCommentIds.clear();
+    this.evaluatedAuthors.clear();
 
     // Re-evaluate the new submission and trigger scanning
     void this.evaluateSubmission();
@@ -123,11 +139,23 @@ export class ContentOrchestrator {
   }
 
   private debounceTimer: number | null = null;
-  private debouncedScan(): void {
+  private debouncedScan(delayMs = 300): void {
+    if (typeof window === 'undefined') {
+      void this.scanComments();
+      return;
+    }
     if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
     this.debounceTimer = window.setTimeout(() => {
       void this.scanComments();
-    }, 400);
+    }, delayMs);
+  }
+
+  private scheduleHydrationSweep(): void {
+    if (typeof window === 'undefined') return;
+    if (this.hydrationSweepTimer) window.clearTimeout(this.hydrationSweepTimer);
+    this.hydrationSweepTimer = window.setTimeout(() => {
+      void this.scanComments();
+    }, 950);
   }
 
   private async refreshSettings(): Promise<void> {
@@ -191,16 +219,22 @@ export class ContentOrchestrator {
     try {
       const rawComments = this.adapter.findComments();
       const newComments: RedditCommentElement[] = [];
+      const visiblePendingComments: RedditCommentElement[] = [];
 
       for (const c of rawComments) {
         if (!this.processedCommentIds.has(c.id)) {
           this.processedCommentIds.add(c.id);
           this.viewport.observeComment(c);
           newComments.push(c);
+        } else if (this.viewport.isVisible(c.id)) {
+          const cleanAuthor = c.author.toLowerCase().replace(/^u\//, '').trim();
+          if (cleanAuthor && !this.evaluatedAuthors.has(cleanAuthor)) {
+            visiblePendingComments.push(c);
+          }
         }
       }
 
-      if (newComments.length === 0) {
+      if (newComments.length === 0 && visiblePendingComments.length === 0) {
         return;
       }
 
@@ -230,6 +264,7 @@ export class ContentOrchestrator {
             ],
             evaluatedAt: Date.now()
           };
+          this.evaluatedAuthors.add(c.author.toLowerCase().replace(/^u\//, '').trim());
           this.client.recordDeflection(syntheticScored).catch(() => {});
           this.adapter.collapseComment(
             c,
@@ -243,14 +278,20 @@ export class ContentOrchestrator {
         }
       }
 
-      // Batch query usernames to backend
-      const usernames = Array.from(new Set(remainingComments.map((c) => c.author)));
+      // Combine visible pending comments with remaining new comments (viewport-visible first)
+      const combinedTargetComments = [
+        ...visiblePendingComments,
+        ...remainingComments
+      ];
+
+      // Batch query usernames to backend (promotes currently visible authors to front of queue)
+      const usernames = Array.from(new Set(combinedTargetComments.map((c) => c.author)));
       if (usernames.length === 0) {
         return;
       }
 
       const scoredMap = await this.client.checkUsers(usernames);
-      this.applyScoredResults(remainingComments, scoredMap);
+      this.applyScoredResults(rawComments, scoredMap);
     } finally {
       this.isScanning = false;
       if (this.pendingRescan) {
@@ -263,11 +304,18 @@ export class ContentOrchestrator {
   private applyScoredResults(comments: RedditCommentElement[], scoredMap: Record<string, ScoredUser>): void {
     if (!this.adapter) return;
 
+    for (const key of Object.keys(scoredMap)) {
+      this.evaluatedAuthors.add(key.toLowerCase().replace(/^u\//, '').trim());
+    }
+
     for (const c of comments) {
       if (c.element.dataset.bdDeflected === 'true') continue;
 
-      let scored = scoredMap[c.author.toLowerCase().replace(/^u\//, '')];
+      const cleanAuthor = c.author.toLowerCase().replace(/^u\//, '').trim();
+      let scored = scoredMap[cleanAuthor];
       if (!scored) continue;
+
+      this.evaluatedAuthors.add(cleanAuthor);
 
       // Local Heuristic Veto:
       // Even if account scored CLEAN or FLAG on profile metadata alone,

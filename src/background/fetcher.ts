@@ -2,7 +2,7 @@ import { isDuplicateTitle } from '../engine/heuristics';
 import { RedditCommentActivity, RedditProfileData, RedditSubmission } from '../types';
 import { requestQueue } from './rateLimiter';
 
-export async function fetchUserProfile(username: string): Promise<RedditProfileData | null> {
+export async function fetchUserProfile(username: string, priority = false): Promise<RedditProfileData | null> {
   const clean = username.replace(/^u\//, '').trim();
   if (!clean || clean === '[deleted]') return null;
 
@@ -14,8 +14,10 @@ export async function fetchUserProfile(username: string): Promise<RedditProfileD
       }
     });
 
+    requestQueue.updateFromResponse(res);
+
     if (res.status === 429) {
-      throw new Error(`Reddit API rate limit 429 for ${clean}`);
+      throw requestQueue.createRateLimitError(res, `Reddit API rate limit 429 for ${clean}`);
     }
 
     if (res.status === 404) {
@@ -63,10 +65,10 @@ export async function fetchUserProfile(username: string): Promise<RedditProfileD
       isEmployee: Boolean(data.is_employee),
       hasCustomAvatar
     };
-  });
+  }, { priority });
 }
 
-export async function fetchUserComments(username: string): Promise<RedditCommentActivity[]> {
+export async function fetchUserComments(username: string, priority = true): Promise<RedditCommentActivity[]> {
   const clean = username.replace(/^u\//, '').trim();
   if (!clean || clean === '[deleted]') return [];
 
@@ -78,8 +80,10 @@ export async function fetchUserComments(username: string): Promise<RedditComment
       }
     });
 
+    requestQueue.updateFromResponse(res);
+
     if (res.status === 429) {
-      throw new Error(`Reddit API rate limit 429 for comments of ${clean}`);
+      throw requestQueue.createRateLimitError(res, `Reddit API rate limit 429 for comments of ${clean}`);
     }
 
     if (!res.ok) return [];
@@ -98,7 +102,7 @@ export async function fetchUserComments(username: string): Promise<RedditComment
       edited: c.data?.edited !== undefined ? (c.data.edited as boolean | number) : false,
       isSubmitter: Boolean(c.data?.is_submitter)
     }));
-  });
+  }, { priority });
 }
 
 export async function searchSubredditHistoricalPosts(
@@ -120,8 +124,10 @@ export async function searchSubredditHistoricalPosts(
       }
     });
 
+    requestQueue.updateFromResponse(res);
+
     if (res.status === 429) {
-      throw new Error(`Reddit API rate limit 429 for search in r/${cleanSub}`);
+      throw requestQueue.createRateLimitError(res, `Reddit API rate limit 429 for search in r/${cleanSub}`);
     }
 
     if (!res.ok) return null;
@@ -171,6 +177,12 @@ export async function fetchHistoricalTopComments(postId: string): Promise<string
       }
     });
 
+    requestQueue.updateFromResponse(res);
+
+    if (res.status === 429) {
+      throw requestQueue.createRateLimitError(res, `Reddit API rate limit 429 for comments of post ${cleanId}`);
+    }
+
     if (!res.ok) return [];
 
     const json = await res.json();
@@ -197,7 +209,7 @@ export async function fetchHistoricalTopComments(postId: string): Promise<string
     }
 
     return bodies;
-  });
+  }, { priority: true });
 }
 
 /**
@@ -245,6 +257,8 @@ export async function fetchBotBouncerBannedBatch(): Promise<string[]> {
         }
       });
 
+      requestQueue.updateFromResponse(res);
+
       if (!res.ok) return [];
 
       const json = await res.json();
@@ -259,28 +273,30 @@ export async function fetchBotBouncerBannedBatch(): Promise<string[]> {
 /**
  * Performs an on-demand check on r/BotBouncer for a specific borderline account.
  */
-export async function checkBotBouncerUser(username: string): Promise<boolean> {
+export async function checkBotBouncerUser(username: string, priority = true): Promise<boolean> {
   const clean = username.replace(/^u\//, '').trim().toLowerCase();
   if (!clean || clean === '[deleted]') return false;
 
   return requestQueue.enqueue(async () => {
-    try {
-      const query = `"Overview for ${clean}"`;
-      const url = `https://www.reddit.com/r/BotBouncer/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=new&limit=5`;
-      const res = await fetch(url, {
-        headers: {
-          'Accept': 'application/json'
-        }
-      });
+    const query = `"Overview for ${clean}"`;
+    const url = `https://www.reddit.com/r/BotBouncer/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=new&limit=5`;
+    const res = await fetch(url, {
+      headers: {
+        'Accept': 'application/json'
+      }
+    });
 
-      if (!res.ok) return false;
+    requestQueue.updateFromResponse(res);
 
-      const json = await res.json();
-      const children = json?.data?.children;
-      const banned = parseBotBouncerListing(children);
-      return banned.includes(clean);
-    } catch {
-      return false;
+    if (res.status === 429) {
+      throw requestQueue.createRateLimitError(res, `Reddit API rate limit 429 for BotBouncer check on ${clean}`);
     }
-  });
+
+    if (!res.ok) return false;
+
+    const json = await res.json();
+    const children = json?.data?.children;
+    const banned = parseBotBouncerListing(children);
+    return banned.includes(clean);
+  }, { priority });
 }
