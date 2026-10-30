@@ -43,6 +43,12 @@ export async function fetchUserProfile(username: string): Promise<RedditProfileD
     const subDesc = typeof data.subreddit?.public_description === 'string' ? data.subreddit.public_description.trim() : '';
     const combinedBio = [subTitle, subDesc].filter(Boolean).join(' — ');
 
+    const iconImg = typeof data.icon_img === 'string' ? data.icon_img : '';
+    const snoovatarImg = typeof data.snoovatar_img === 'string' ? data.snoovatar_img : '';
+    const hasCustomAvatar = Boolean(
+      snoovatarImg || (iconImg.length > 0 && !iconImg.includes('default'))
+    );
+
     return {
       username: data.name || clean,
       createdUtc: data.created_utc || 0,
@@ -51,7 +57,11 @@ export async function fetchUserProfile(username: string): Promise<RedditProfileD
       totalKarma: data.total_karma || ((data.link_karma || 0) + (data.comment_karma || 0)),
       bio: combinedBio,
       isSuspended: Boolean(data.is_suspended),
-      over18: Boolean(data.subreddit?.over_18)
+      over18: Boolean(data.subreddit?.over_18),
+      hasVerifiedEmail: typeof data.has_verified_email === 'boolean' ? data.has_verified_email : undefined,
+      isGold: Boolean(data.is_gold),
+      isEmployee: Boolean(data.is_employee),
+      hasCustomAvatar
     };
   });
 }
@@ -84,7 +94,9 @@ export async function fetchUserComments(username: string): Promise<RedditComment
       subreddit: typeof c.data?.subreddit === 'string' ? c.data.subreddit : '',
       createdUtc: typeof c.data?.created_utc === 'number' ? c.data.created_utc : 0,
       body: typeof c.data?.body === 'string' ? c.data.body : '',
-      score: typeof c.data?.score === 'number' ? c.data.score : 0
+      score: typeof c.data?.score === 'number' ? c.data.score : 0,
+      edited: c.data?.edited !== undefined ? (c.data.edited as boolean | number) : false,
+      isSubmitter: Boolean(c.data?.is_submitter)
     }));
   });
 }
@@ -185,5 +197,90 @@ export async function fetchHistoricalTopComments(postId: string): Promise<string
     }
 
     return bodies;
+  });
+}
+
+/**
+ * Parses a listing of r/BotBouncer submissions and extracts usernames
+ * whose evaluation thread (`Overview for <username>`) carries a Banned classification flair.
+ */
+export function parseBotBouncerListing(children: Array<{ data?: Record<string, unknown> }>): string[] {
+  if (!Array.isArray(children)) return [];
+  const bannedUsers = new Set<string>();
+
+  for (const item of children) {
+    const d = item?.data;
+    if (!d) continue;
+
+    const title = typeof d.title === 'string' ? d.title.trim() : '';
+    const match = /^Overview for ([A-Za-z0-9_-]{3,30})$/i.exec(title);
+    if (!match) continue;
+
+    const flairText = typeof d.link_flair_text === 'string' ? d.link_flair_text : '';
+    const flairCss = typeof d.link_flair_css_class === 'string' ? d.link_flair_css_class : '';
+    const combinedFlair = `${flairText} ${flairCss}`.toLowerCase();
+
+    // Only include accounts explicitly classified as Banned (exclude Pending, Organic, Human, Service, Declined)
+    if (
+      /\bbanned\b/.test(combinedFlair) &&
+      !/\b(?:organic|human|declined|service|pending|unbanned)\b/.test(combinedFlair)
+    ) {
+      bannedUsers.add(match[1].toLowerCase());
+    }
+  }
+
+  return Array.from(bannedUsers);
+}
+
+/**
+ * Fetches the latest confirmed banned bot accounts from r/BotBouncer for periodic database sync.
+ */
+export async function fetchBotBouncerBannedBatch(): Promise<string[]> {
+  return requestQueue.enqueue(async () => {
+    try {
+      const url = 'https://www.reddit.com/r/BotBouncer/new.json?limit=100';
+      const res = await fetch(url, {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!res.ok) return [];
+
+      const json = await res.json();
+      const children = json?.data?.children;
+      return parseBotBouncerListing(children);
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * Performs an on-demand check on r/BotBouncer for a specific borderline account.
+ */
+export async function checkBotBouncerUser(username: string): Promise<boolean> {
+  const clean = username.replace(/^u\//, '').trim().toLowerCase();
+  if (!clean || clean === '[deleted]') return false;
+
+  return requestQueue.enqueue(async () => {
+    try {
+      const query = `"Overview for ${clean}"`;
+      const url = `https://www.reddit.com/r/BotBouncer/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=new&limit=5`;
+      const res = await fetch(url, {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!res.ok) return false;
+
+      const json = await res.json();
+      const children = json?.data?.children;
+      const banned = parseBotBouncerListing(children);
+      return banned.includes(clean);
+    } catch {
+      return false;
+    }
   });
 }

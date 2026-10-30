@@ -3,6 +3,8 @@ import {
 } from '../background/cache';
 import { blockRedditUser } from '../background/blocker';
 import {
+  checkBotBouncerUser,
+  fetchBotBouncerBannedBatch,
   fetchHistoricalTopComments,
   fetchUserComments,
   fetchUserProfile,
@@ -117,7 +119,9 @@ declare function GM_setValue<T>(key: string, value: T): void;
 
 const USERSCRIPT_SETTINGS_KEY = 'bd_settings';
 const USERSCRIPT_CACHE_PREFIX = 'bd_cache_';
+const USERSCRIPT_BOT_DB_KEY = 'bd_bot_db';
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 
 function getStoredValue<T>(key: string, fallback: T): T {
   try {
@@ -259,9 +263,36 @@ export class UserscriptBackendClient implements DeflectorClient {
     return results;
   }
 
+  private async getSyncedBotSet(): Promise<Set<string>> {
+    const db = getStoredValue<{ usernames: string[]; lastSyncedAt: number }>(USERSCRIPT_BOT_DB_KEY, {
+      usernames: [],
+      lastSyncedAt: 0
+    });
+
+    if (Date.now() - db.lastSyncedAt > SIX_HOURS_MS) {
+      try {
+        const fresh = await fetchBotBouncerBannedBatch();
+        const merged = Array.from(new Set([...db.usernames, ...fresh])).slice(-5000);
+        setStoredValue(USERSCRIPT_BOT_DB_KEY, {
+          usernames: merged,
+          lastSyncedAt: Date.now()
+        });
+        return new Set(merged);
+      } catch {
+        // Fallback to existing
+      }
+    }
+    return new Set(db.usernames);
+  }
+
   private async evaluateUncachedUsers(usernames: string[]): Promise<void> {
+    const knownBotSet = await this.getSyncedBotSet();
+
     for (const username of usernames) {
       try {
+        const cleanName = username.replace(/^u\//, '').trim().toLowerCase();
+        let isKnownBot = knownBotSet.has(cleanName);
+
         const profile = await fetchUserProfile(username);
         let comments: RedditCommentActivity[] = [];
 
@@ -269,7 +300,7 @@ export class UserscriptBackendClient implements DeflectorClient {
           comments = await fetchUserComments(username);
         }
 
-        const scored = scoreUser(
+        let scored = scoreUser(
           username,
           profile || undefined,
           comments,
@@ -278,9 +309,31 @@ export class UserscriptBackendClient implements DeflectorClient {
           {
             deflectThreshold: this.settings.deflectThreshold,
             flagThreshold: this.settings.flagThreshold,
-            userWhitelist: this.settings.whitelist
+            userWhitelist: this.settings.whitelist,
+            isKnownBotDatabase: isKnownBot
           }
         );
+
+        if (scored.classification === 'FLAG' && !isKnownBot) {
+          const confirmed = await checkBotBouncerUser(username);
+          if (confirmed) {
+            isKnownBot = true;
+            knownBotSet.add(cleanName);
+            scored = scoreUser(
+              username,
+              profile || undefined,
+              comments,
+              undefined,
+              undefined,
+              {
+                deflectThreshold: this.settings.deflectThreshold,
+                flagThreshold: this.settings.flagThreshold,
+                userWhitelist: this.settings.whitelist,
+                isKnownBotDatabase: true
+              }
+            );
+          }
+        }
 
         if (scored.classification === 'DEFLECT' && this.settings.autoBlockReddit && !scored.isBlockedOnReddit) {
           const blockRes = await blockRedditUser(username);

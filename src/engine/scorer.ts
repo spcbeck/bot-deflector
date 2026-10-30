@@ -1,6 +1,7 @@
 import { Classification, ConfidenceTier, RedditCommentActivity, RedditProfileData, ScoredUser, ThreatRuleHit } from '../types';
 import {
   AUTO_USERNAME_REGEX,
+  BIO_SPAM_REGEX,
   evaluateAccountAge,
   evaluateAutoUsername,
   evaluateBioSpam,
@@ -8,11 +9,18 @@ import {
   evaluateDialogueReciprocity,
   evaluateEstablishedUser,
   evaluateGhostKarma,
+  evaluateHumanActivitySignals,
   evaluateKarmaAsymmetry,
+  evaluateKarmaFarmSubreddits,
+  evaluateLlmAndTemplateCadence,
   evaluateLowReputation,
   evaluateMerchSpam,
+  evaluateNsfwFunnelProfile,
+  evaluateScriptHomoglyphBleed,
   evaluateSleeperGap,
+  evaluateTimezoneShiftAnomaly,
   evaluateUnescapedEntities,
+  evaluateUnverifiedEmail,
   evaluateVelocityCadence
 } from './heuristics';
 import { isUserWhitelisted } from './whitelist';
@@ -25,7 +33,27 @@ export interface ScoreEvaluationOptions {
   flagThreshold?: number;
   isAccompliceHijacker?: boolean;
   isExactTitleRepost?: boolean;
+  isKnownBotDatabase?: boolean;
 }
+
+// Hard compromise / active bot indicators that invalidate historical age/karma safe harbors on bought/hacked accounts
+const HARD_COMPROMISE_RULE_IDS = new Set([
+  'botbouncer_database_hit',
+  'bio_funnel_link',
+  'aged_sleeper_gap',
+  'ghost_karma_scrubbed',
+  'timezone_shift_compromise',
+  'karma_farm_footprint',
+  'accomplice_comment_theft',
+  'exact_historical_repost',
+  'inhuman_velocity_cadence',
+  'script_homoglyph_bleed'
+]);
+
+const HISTORICAL_SAFE_HARBOR_RULE_IDS = new Set([
+  'established_user_safe_harbor',
+  'human_verified_veteran_traits'
+]);
 
 /**
  * Determines whether an account warrants fetching recent comment history
@@ -62,7 +90,45 @@ export function shouldDrilldownComments(
   // 6. Negative reputation
   if (profile.totalKarma < 0) return true;
 
+  // 7. NSFW funnel profile candidates or bio spam candidates
+  if (profile.over18 && profile.linkKarma >= 200 && profile.commentKarma < 100) return true;
+  if (profile.bio && BIO_SPAM_REGEX.test(profile.bio)) return true;
+
   return false;
+}
+
+/**
+ * Calculates a 0-100 "Not-a-Bot" Humanity Rating based on threat score,
+ * active organic behavioral traits, and profile history.
+ */
+export function calculateHumanityScore(
+  finalThreatScore: number,
+  breakdown: ThreatRuleHit[] = [],
+  profile?: RedditProfileData,
+  isWhitelistedOrMod = false
+): number {
+  if (isWhitelistedOrMod) return 100;
+
+  const safeHarborBonus = breakdown
+    .filter((h) => h.points < 0)
+    .reduce((sum, h) => sum + Math.abs(h.points), 0);
+
+  let baseHumanity = 100 - finalThreatScore;
+
+  // If no threats were found, scale humanity rating by positive verification signals
+  if (finalThreatScore === 0) {
+    let organicBaseline = 60;
+    if (profile) {
+      const ageDays = (Date.now() / 1000 - profile.createdUtc) / 86400;
+      if (ageDays >= 365 && profile.totalKarma >= 1000) organicBaseline = 80;
+      else if (ageDays >= 180 && profile.totalKarma >= 100) organicBaseline = 70;
+    }
+    baseHumanity = Math.min(100, organicBaseline + Math.min(40, safeHarborBonus));
+  } else {
+    baseHumanity = Math.max(0, Math.min(100, baseHumanity + Math.min(15, Math.floor(safeHarborBonus / 3))));
+  }
+
+  return Math.round(baseHumanity);
 }
 
 export function calculateConfidenceTier(
@@ -119,6 +185,7 @@ export function scoreUser(
     return {
       username,
       score: 0,
+      humanityScore: 100,
       classification: 'CLEAN',
       breakdown: [
         {
@@ -140,6 +207,7 @@ export function scoreUser(
     return {
       username,
       score: 0,
+      humanityScore: 100,
       classification: 'CLEAN',
       breakdown: [
         {
@@ -154,6 +222,17 @@ export function scoreUser(
       profile,
       confidenceTier: 1
     };
+  }
+
+  // 2b. Known Bot Database Match (e.g. synced from r/BotBouncer)
+  if (options.isKnownBotDatabase) {
+    breakdown.push({
+      ruleId: 'botbouncer_database_hit',
+      category: 'syndicate',
+      name: 'Known Bot Database Match (r/BotBouncer)',
+      points: 85,
+      description: 'Account is listed as a confirmed banned bot in the r/BotBouncer database'
+    });
   }
 
   // 3. Exact Historical Title Repost (From Archival Search)
@@ -201,6 +280,17 @@ export function scoreUser(
     if (merchHit) breakdown.push(merchHit);
   }
 
+  // 7b. Mixed-Script Homoglyph Filter Evasion
+  const homoglyphHit = evaluateScriptHomoglyphBleed(
+    comments || [],
+    profile?.bio || '',
+    commentText || '',
+    submissionTitle || ''
+  );
+  if (homoglyphHit) {
+    breakdown.push(homoglyphHit);
+  }
+
   // 8. Profile Checks (if profile data is available)
   if (profile) {
     // Bio link check
@@ -214,6 +304,14 @@ export function scoreUser(
       const ageHit = evaluateAccountAge(profile.createdUtc);
       if (ageHit) breakdown.push(ageHit);
     }
+
+    // Unverified email check on low-trust/young accounts
+    const unverifiedHit = evaluateUnverifiedEmail(profile);
+    if (unverifiedHit) breakdown.push(unverifiedHit);
+
+    // NSFW karma-funnel profile check
+    const nsfwFunnelHit = evaluateNsfwFunnelProfile(profile);
+    if (nsfwFunnelHit) breakdown.push(nsfwFunnelHit);
 
     // Low reputation / negative karma check
     const lowRepHit = evaluateLowReputation(profile.totalKarma);
@@ -229,14 +327,20 @@ export function scoreUser(
   }
 
   // 9. Activity Timeline Checks (if comment history is available from Smart Drilldown)
-  if (comments && comments.length > 0 && profile) {
-    // Sleeper gap check
-    const sleeperHit = evaluateSleeperGap(profile.createdUtc, profile.totalKarma, comments);
-    if (sleeperHit) breakdown.push(sleeperHit);
+  if (comments && comments.length > 0) {
+    if (profile) {
+      // Sleeper gap check
+      const sleeperHit = evaluateSleeperGap(profile.createdUtc, profile.totalKarma, comments);
+      if (sleeperHit) breakdown.push(sleeperHit);
 
-    // Ghost karma check
-    const ghostHit = evaluateGhostKarma(profile.commentKarma, comments);
-    if (ghostHit) breakdown.push(ghostHit);
+      // Ghost karma check
+      const ghostHit = evaluateGhostKarma(profile.commentKarma, comments);
+      if (ghostHit) breakdown.push(ghostHit);
+    }
+
+    // Known karma-farming subreddit footprint
+    const karmaFarmHit = evaluateKarmaFarmSubreddits(comments);
+    if (karmaFarmHit) breakdown.push(karmaFarmHit);
 
     // Inhuman velocity cadence
     const velocityHit = evaluateVelocityCadence(comments);
@@ -246,13 +350,35 @@ export function scoreUser(
     const circadianHit = evaluateCircadianAnomaly(comments);
     if (circadianHit) breakdown.push(circadianHit);
 
+    // Geographic timezone shift (sold/compromised account handoff)
+    const timezoneShiftHit = evaluateTimezoneShiftAnomaly(comments);
+    if (timezoneShiftHit) breakdown.push(timezoneShiftHit);
+
+    // LLM slop & repetitive template cadence
+    const llmTemplateHit = evaluateLlmAndTemplateCadence(comments);
+    if (llmTemplateHit) breakdown.push(llmTemplateHit);
+
     // Dialogue reciprocity (Drive-by deficit vs Conversationalist safe harbor)
     const dialogueHit = evaluateDialogueReciprocity(comments);
     if (dialogueHit) breakdown.push(dialogueHit);
   }
 
+  // 10. Active "Not-a-Bot" Humanity Signals (edited comments, OP thread engagement, lexical diversity, verified traits)
+  const humanityHits = evaluateHumanActivitySignals(comments || [], profile);
+  if (humanityHits.length > 0) {
+    breakdown.push(...humanityHits);
+  }
+
+  // 11. Compromised Account Safe-Harbor Guard:
+  // Prevent bought or hacked veteran accounts from using historical reputation safe harbors
+  // to cancel out active bot/funnel/compromise rules.
+  const hasHardCompromiseSignal = breakdown.some((hit) => HARD_COMPROMISE_RULE_IDS.has(hit.ruleId));
+  const effectiveBreakdown = hasHardCompromiseSignal
+    ? breakdown.filter((hit) => !HISTORICAL_SAFE_HARBOR_RULE_IDS.has(hit.ruleId))
+    : breakdown;
+
   // Calculate composite score
-  const totalPoints = breakdown.reduce((sum, hit) => sum + hit.points, 0);
+  const totalPoints = effectiveBreakdown.reduce((sum, hit) => sum + hit.points, 0);
   const normalizedScore = Math.max(0, Math.min(100, totalPoints));
 
   // Circumstantial metadata-only rules (baseline traits that organic new users can naturally possess)
@@ -260,11 +386,12 @@ export function scoreUser(
     'fresh_account_48h',
     'young_account_14d',
     'auto_generated_username',
-    'low_karma_baseline'
+    'low_karma_baseline',
+    'unverified_email_account'
   ]);
 
   // Check if there are affirmative threat signals beyond circumstantial metadata
-  const hasAffirmativeThreat = breakdown.some(
+  const hasAffirmativeThreat = effectiveBreakdown.some(
     (hit) => hit.points > 0 && !circumstantialRuleIds.has(hit.ruleId)
   );
 
@@ -284,14 +411,22 @@ export function scoreUser(
 
   const confidenceTier =
     classification === 'CLEAN'
-      ? calculateConfidenceTier(profile, breakdown, false, Boolean(options.isMod || profile?.isMod))
+      ? calculateConfidenceTier(profile, effectiveBreakdown, false, Boolean(options.isMod || profile?.isMod))
       : undefined;
+
+  const humanityScore = calculateHumanityScore(
+    finalScore,
+    effectiveBreakdown,
+    profile,
+    Boolean(options.isMod || profile?.isMod)
+  );
 
   return {
     username,
     score: finalScore,
+    humanityScore,
     classification,
-    breakdown,
+    breakdown: effectiveBreakdown,
     evaluatedAt: Date.now(),
     profile,
     confidenceTier

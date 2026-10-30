@@ -7,9 +7,16 @@ import {
   evaluateCircadianAnomaly,
   evaluateDialogueReciprocity,
   evaluateGhostKarma,
+  evaluateHumanActivitySignals,
   evaluateKarmaAsymmetry,
+  evaluateKarmaFarmSubreddits,
+  evaluateLlmAndTemplateCadence,
+  evaluateNsfwFunnelProfile,
+  evaluateScriptHomoglyphBleed,
   evaluateSleeperGap,
+  evaluateTimezoneShiftAnomaly,
   evaluateUnescapedEntities,
+  evaluateUnverifiedEmail,
   evaluateVelocityCadence,
   isDuplicateTitle,
   isStolenCommentMatch
@@ -259,4 +266,172 @@ test('11. Title and Comment Similarity Guards Prevent Substring False Positives'
     ),
     false
   );
+});
+
+test('12. Karma-Farming Subreddit Footprint Detection', () => {
+  const comments: RedditCommentActivity[] = [
+    { id: '1', linkId: 't3_a', subreddit: 'FreeKarma4U', createdUtc: 1700000000, body: 'upvoted please return', score: 1 },
+    { id: '2', linkId: 't3_b', subreddit: 'Karma4Free', createdUtc: 1700000500, body: 'done', score: 1 }
+  ];
+  const hit = evaluateKarmaFarmSubreddits(comments);
+  assert.ok(hit);
+  assert.strictEqual(hit?.ruleId, 'karma_farm_footprint');
+  assert.strictEqual(hit?.points, 55);
+});
+
+test('13. Mixed-Script Homoglyph Filter Evasion Detection', () => {
+  // 't\u0435l\u0435gr\u0430m' uses Cyrillic 'е' (\u0435) and 'а' (\u0430) inside a Latin word
+  const evasiveBio = 'Message me on t\u0435l\u0435gr\u0430m for exclusive content';
+  const hit = evaluateScriptHomoglyphBleed([], evasiveBio);
+  assert.ok(hit);
+  assert.strictEqual(hit?.ruleId, 'script_homoglyph_bleed');
+  assert.strictEqual(hit?.points, 50);
+
+  // Pure English or separate non-mixed words should not trigger
+  assert.strictEqual(evaluateScriptHomoglyphBleed([], 'Just a normal developer bio'), null);
+});
+
+test('14. LLM Slop & Repetitive Template Cadence Detection', () => {
+  // Case A: Repetitive opening template across comments
+  const templateComments: RedditCommentActivity[] = Array.from({ length: 6 }, (_, i) => ({
+    id: String(i),
+    linkId: `t3_${i}`,
+    subreddit: 'askreddit',
+    createdUtc: 1700000000 - i * 600,
+    body: `Honestly I think that scenario number ${i} is super interesting and worth considering today.`,
+    score: 1
+  }));
+  const templateHit = evaluateLlmAndTemplateCadence(templateComments);
+  assert.ok(templateHit);
+  assert.strictEqual(templateHit?.ruleId, 'repetitive_comment_templates');
+
+  // Case B: Synthetic LLM em-dash density + uniform mid-length
+  const llmBodies = [
+    'That is a fascinating point — the way modern supply chains adapt to pressure really highlights the core issue.',
+    'People often overlook the long-term impact — once the initial hype fades, the maintenance cost becomes clear.',
+    'Balancing speed and reliability is never easy — teams that invest early in architecture always come out ahead.',
+    'Context matters so much in these debates — what works for a small startup rarely scales to an enterprise.',
+    'The design tradeoff here is subtle — optimizing for battery life inevitably sacrifices peak rendering throughput.',
+    'History tends to repeat itself in tech — every decade swings between centralized clouds and local compute.',
+    'Clear communication solves half the battle — most engineering failures trace back to misaligned expectations.',
+    'Regulations are finally catching up — transparency around data retention is no longer optional for platforms.'
+  ];
+  const llmComments: RedditCommentActivity[] = llmBodies.map((body, i) => ({
+    id: String(i),
+    linkId: `t3_${i}`,
+    subreddit: 'technology',
+    createdUtc: 1700000000 - i * 1800,
+    body,
+    score: 2
+  }));
+  const llmHit = evaluateLlmAndTemplateCadence(llmComments);
+  assert.ok(llmHit);
+  assert.strictEqual(llmHit?.ruleId, 'llm_slop_cadence');
+});
+
+test('15. Geographic Timezone Shift (Sold / Compromised Account Handoff)', () => {
+  // Base timestamp at 00:00:00 UTC
+  const baseMidnightUtc = 1704067200; // 2024-01-01T00:00:00Z
+  const comments: RedditCommentActivity[] = [];
+
+  // 7 recent comments clustered around 09:00 UTC (e.g. Eastern Europe / Asia daytime)
+  for (let i = 0; i < 7; i++) {
+    comments.push({
+      id: `new_${i}`,
+      linkId: `t3_new_${i}`,
+      subreddit: 'crypto',
+      createdUtc: baseMidnightUtc - i * 86400 + 9 * 3600,
+      body: 'Great project!',
+      score: 1
+    });
+  }
+
+  // 30-day dormancy gap, preceded by 7 older comments clustered around 21:00 UTC (e.g. US evening)
+  const olderBaseUtc = baseMidnightUtc - 40 * 86400;
+  for (let i = 0; i < 7; i++) {
+    comments.push({
+      id: `old_${i}`,
+      linkId: `t3_old_${i}`,
+      subreddit: 'baseball',
+      createdUtc: olderBaseUtc - i * 86400 + 21 * 3600,
+      body: 'What a great game tonight',
+      score: 5
+    });
+  }
+
+  const shiftHit = evaluateTimezoneShiftAnomaly(comments);
+  assert.ok(shiftHit);
+  assert.strictEqual(shiftHit?.ruleId, 'timezone_shift_compromise');
+  assert.strictEqual(shiftHit?.points, 40);
+});
+
+test('16. Active "Not-a-Bot" Humanity Signals & Compromised Veteran Account Guard', () => {
+  const now = Math.floor(Date.now() / 1000);
+
+  // Active human with edited comments and OP thread replies
+  const humanComments: RedditCommentActivity[] = [
+    { id: '1', linkId: 't3_1', subreddit: 'woodworking', createdUtc: now - 300, body: 'Thanks!', score: 3, isSubmitter: true },
+    { id: '2', linkId: 't3_1', subreddit: 'woodworking', createdUtc: now - 600, body: 'I used tung oil on the walnut.', score: 5, isSubmitter: true, edited: now - 500 },
+    { id: '3', linkId: 't3_2', subreddit: 'diy', createdUtc: now - 1200, body: 'Fixed a typo in my measurements.', score: 2, edited: now - 1100 }
+  ];
+  const humanProfile: RedditProfileData = {
+    username: 'craftsman_joe',
+    createdUtc: now - 800 * 86400,
+    linkKarma: 1500,
+    commentKarma: 3000,
+    totalKarma: 4500,
+    bio: 'Woodworker',
+    hasVerifiedEmail: true,
+    hasCustomAvatar: true
+  };
+
+  const humanSignals = evaluateHumanActivitySignals(humanComments, humanProfile);
+  assert.ok(humanSignals.some((h) => h.ruleId === 'human_edited_comments'));
+  assert.ok(humanSignals.some((h) => h.ruleId === 'human_op_engagement'));
+  assert.ok(humanSignals.some((h) => h.ruleId === 'human_verified_veteran_traits'));
+
+  const scoredHuman = scoreUser(humanProfile.username, humanProfile, humanComments);
+  assert.strictEqual(scoredHuman.classification, 'CLEAN');
+  assert.ok((scoredHuman.humanityScore ?? 0) >= 90);
+
+  // Compromised Veteran Account: 3-year-old account with 5,000 karma that was sold and added a Telegram funnel + NSFW funnel
+  const compromisedProfile: RedditProfileData = {
+    username: 'bought_veteran_acc',
+    createdUtc: now - 1000 * 86400,
+    linkKarma: 4980,
+    commentKarma: 20,
+    totalKarma: 5000,
+    bio: 'Check my exclusive links on t.me/scamchannel',
+    over18: true,
+    hasVerifiedEmail: true,
+    hasCustomAvatar: true
+  };
+
+  const scoredCompromised = scoreUser(compromisedProfile.username, compromisedProfile, []);
+  // Historical safe harbors MUST be stripped when bio_funnel_link is present!
+  assert.ok(!scoredCompromised.breakdown.some((h) => h.ruleId === 'established_user_safe_harbor'));
+  assert.strictEqual(scoredCompromised.classification, 'DEFLECT');
+  assert.ok(scoredCompromised.score >= 70);
+});
+
+test('17. Unverified Email & NSFW Funnel Profile Heuristics', () => {
+  const now = Math.floor(Date.now() / 1000);
+  const nsfwBotProfile: RedditProfileData = {
+    username: 'Hot_Promo_99',
+    createdUtc: now - 10 * 86400,
+    linkKarma: 1200,
+    commentKarma: 5,
+    totalKarma: 1205,
+    bio: '',
+    over18: true,
+    hasVerifiedEmail: false
+  };
+
+  const unverifiedHit = evaluateUnverifiedEmail(nsfwBotProfile, now);
+  assert.ok(unverifiedHit);
+  assert.strictEqual(unverifiedHit?.ruleId, 'unverified_email_account');
+
+  const nsfwHit = evaluateNsfwFunnelProfile(nsfwBotProfile);
+  assert.ok(nsfwHit);
+  assert.strictEqual(nsfwHit?.ruleId, 'nsfw_funnel_profile');
 });

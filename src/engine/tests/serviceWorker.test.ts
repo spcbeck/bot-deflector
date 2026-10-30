@@ -5,6 +5,7 @@ import {
   clearTabDeflections,
   CLEAN_CACHE_PREFIX,
   getBlockedUsersHistory,
+  getKnownBotSet,
   getRecentThreatUsers,
   getSessionModhash,
   getStats,
@@ -13,11 +14,13 @@ import {
   getTabThreatUsers,
   incrementStats,
   LEGACY_CACHE_PREFIX,
+  mergeKnownBots,
   saveBlockedUsersHistory,
   setSessionModhash,
   sweepExpiredCacheRecords,
   THREAT_CACHE_PREFIX
 } from '../../background/cache';
+import { parseBotBouncerListing } from '../../background/fetcher';
 import { scoreUser } from '../scorer';
 import { CompactCleanRecord, RedditProfileData, ScoredUser } from '../../types';
 
@@ -388,6 +391,65 @@ test('SW-8: Concurrent incrementStats calls serialize without race condition', a
     assert.strictEqual(finalStats.deflectedCount, 1);
     assert.strictEqual(finalStats.cacheHitCount, 5);
     assert.strictEqual(finalStats.blockedCount, 1);
+  } finally {
+    (globalThis as any).chrome = originalChrome;
+  }
+});
+
+test('SW-9: r/BotBouncer Listing Parser & Scheduled Known Bot Database Sync', async () => {
+  const originalChrome = (globalThis as any).chrome;
+  const mockStorage: Record<string, any> = {};
+
+  (globalThis as any).chrome = {
+    storage: {
+      local: {
+        get: async (keys: any) => {
+          const result: Record<string, any> = {};
+          const keyArray = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyArray) {
+            if (k in mockStorage) result[k] = mockStorage[k];
+          }
+          return result;
+        },
+        set: async (items: Record<string, any>) => {
+          Object.assign(mockStorage, items);
+        }
+      }
+    }
+  };
+
+  try {
+    const sampleListing = [
+      { data: { title: 'Overview for Spam_Bot_9000', link_flair_text: 'Banned' } },
+      { data: { title: 'Overview for Repost_Farm_42', link_flair_text: 'Banned', link_flair_css_class: 'banned' } },
+      { data: { title: 'Overview for Real_Human_User', link_flair_text: 'Organic' } },
+      { data: { title: 'Overview for Under_Review_User', link_flair_text: 'Pending' } },
+      { data: { title: 'Weekly BotBouncer Status Thread', link_flair_text: 'Announcement' } }
+    ];
+
+    const parsedBanned = parseBotBouncerListing(sampleListing);
+    assert.deepStrictEqual(parsedBanned.sort(), ['repost_farm_42', 'spam_bot_9000']);
+
+    const syncRes1 = await mergeKnownBots(parsedBanned);
+    assert.strictEqual(syncRes1.added, 2);
+    assert.strictEqual(syncRes1.total, 2);
+
+    // Second sync with 1 overlap and 1 new bot
+    const syncRes2 = await mergeKnownBots(['Spam_Bot_9000', 'u/New_Bot_11']);
+    assert.strictEqual(syncRes2.added, 1);
+    assert.strictEqual(syncRes2.total, 3);
+
+    const botSet = await getKnownBotSet();
+    assert.strictEqual(botSet.has('spam_bot_9000'), true);
+    assert.strictEqual(botSet.has('new_bot_11'), true);
+    assert.strictEqual(botSet.has('real_human_user'), false);
+
+    // Scoring a user matched in the synced bot database immediately classifies as DEFLECT
+    const scoredDbBot = scoreUser('Spam_Bot_9000', undefined, [], undefined, undefined, {
+      isKnownBotDatabase: botSet.has('spam_bot_9000')
+    });
+    assert.strictEqual(scoredDbBot.classification, 'DEFLECT');
+    assert.ok(scoredDbBot.breakdown.some((b) => b.ruleId === 'botbouncer_database_hit'));
   } finally {
     (globalThis as any).chrome = originalChrome;
   }

@@ -440,4 +440,69 @@ export async function saveBlockedUsersHistory(blockedUsers: { username: string; 
   await chrome.storage.local.set({ [REDDIT_BLOCKED_HISTORY_KEY]: blockedUsers });
 }
 
+// ---------------------------------------------------------------------------
+// Synced Known Bot Database (r/BotBouncer periodic feed sync)
+// ---------------------------------------------------------------------------
+
+export const BOT_DATABASE_KEY = 'synced_bot_database';
+export const MAX_SYNCED_BOTS = 5000;
+
+export interface SyncedBotDatabaseRecord {
+  usernames: string[];
+  lastSyncedAt: number;
+}
+
+export async function getKnownBotDatabase(): Promise<SyncedBotDatabaseRecord> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+    return { usernames: [], lastSyncedAt: 0 };
+  }
+  const res = await chrome.storage.local.get(BOT_DATABASE_KEY);
+  const stored = res[BOT_DATABASE_KEY] as SyncedBotDatabaseRecord | undefined;
+  if (!stored || !Array.isArray(stored.usernames)) {
+    return { usernames: [], lastSyncedAt: 0 };
+  }
+  return stored;
+}
+
+export async function getKnownBotSet(): Promise<Set<string>> {
+  const db = await getKnownBotDatabase();
+  return new Set(db.usernames.map((u) => u.toLowerCase()));
+}
+
+export async function mergeKnownBots(
+  newUsernames: string[],
+  now = Date.now()
+): Promise<{ total: number; added: number; lastSyncedAt: number }> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+    return { total: 0, added: 0, lastSyncedAt: now };
+  }
+
+  const current = await getKnownBotDatabase();
+  const existingSet = new Set(current.usernames.map((u) => u.toLowerCase()));
+  let added = 0;
+
+  for (const raw of newUsernames) {
+    const clean = raw.toLowerCase().replace(/^u\//, '').trim();
+    if (clean && clean !== '[deleted]' && !existingSet.has(clean)) {
+      existingSet.add(clean);
+      added++;
+    }
+  }
+
+  const allUsernames = Array.from(existingSet);
+  const capped =
+    allUsernames.length > MAX_SYNCED_BOTS
+      ? allUsernames.slice(allUsernames.length - MAX_SYNCED_BOTS)
+      : allUsernames;
+
+  const updated: SyncedBotDatabaseRecord = {
+    usernames: capped,
+    lastSyncedAt: now
+  };
+
+  await chrome.storage.local.set({ [BOT_DATABASE_KEY]: updated });
+  return { total: capped.length, added, lastSyncedAt: now };
+}
+
+
 

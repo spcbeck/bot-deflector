@@ -8,6 +8,7 @@ import {
   getBlockedUsersHistory,
   getCachedUser,
   getCachedUsersBatch,
+  getKnownBotSet,
   getRecentThreatUsers,
   getSettings,
   getStats,
@@ -15,17 +16,57 @@ import {
   getTabThreatUsers,
   incrementStats,
   invalidateCachedUser,
+  mergeKnownBots,
   saveBlockedUsersHistory,
   setCachedUser,
   sweepExpiredCacheRecords,
   updateSettings
 } from './cache';
 import {
+  checkBotBouncerUser,
+  fetchBotBouncerBannedBatch,
   fetchHistoricalTopComments,
   fetchUserComments,
   fetchUserProfile,
   searchSubredditHistoricalPosts
 } from './fetcher';
+
+// ---------------------------------------------------------------------------
+// Scheduled Sync Task (r/BotBouncer Known Bot Feed & Reddit Blocked List)
+// ---------------------------------------------------------------------------
+
+export async function runScheduledBlocklistSync(): Promise<{
+  botBouncerAdded: number;
+  botBouncerTotal: number;
+  redditBlockedSynced: number;
+}> {
+  let botBouncerAdded = 0;
+  let botBouncerTotal = 0;
+  let redditBlockedSynced = 0;
+
+  try {
+    const bannedBatch = await fetchBotBouncerBannedBatch();
+    if (bannedBatch.length > 0) {
+      const merged = await mergeKnownBots(bannedBatch);
+      botBouncerAdded = merged.added;
+      botBouncerTotal = merged.total;
+    }
+  } catch (err) {
+    console.warn('[BotDeflector] Error syncing r/BotBouncer feed:', err);
+  }
+
+  try {
+    const blocked = await fetchRedditBlockedUsers();
+    if (blocked.length > 0) {
+      await saveBlockedUsersHistory(blocked);
+      redditBlockedSynced = blocked.length;
+    }
+  } catch (err) {
+    console.warn('[BotDeflector] Error syncing Reddit blocked list:', err);
+  }
+
+  return { botBouncerAdded, botBouncerTotal, redditBlockedSynced };
+}
 
 // ---------------------------------------------------------------------------
 // Lifecycle & Alarms Handlers
@@ -41,9 +82,13 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       periodInMinutes: 1440,
       delayInMinutes: 60
     });
+    await chrome.alarms.create('blocklist_sync_alarm', {
+      periodInMinutes: 360, // Every 6 hours
+      delayInMinutes: 1     // Initial sync 1 minute after install/update
+    });
   } catch (err) {
-    console.warn('[BotDeflector] Could not register cache_sweep_alarm:', err);
-    logger.warn('Could not register cache_sweep_alarm', { error: String(err) });
+    console.warn('[BotDeflector] Could not register alarms:', err);
+    logger.warn('Could not register alarms', { error: String(err) });
   }
 });
 
@@ -57,6 +102,15 @@ chrome.alarms?.onAlarm?.addListener(async (alarm) => {
     } catch (err) {
       console.warn('[BotDeflector] Cache sweep error:', err);
       logger.error('Cache sweep error', err as Error);
+    }
+  } else if (alarm.name === 'blocklist_sync_alarm') {
+    console.log('[BotDeflector] Running scheduled blocklist & r/BotBouncer sync...');
+    try {
+      const syncRes = await runScheduledBlocklistSync();
+      logger.info('Scheduled blocklist sync completed', syncRes);
+    } catch (err) {
+      console.warn('[BotDeflector] Scheduled blocklist sync error:', err);
+      logger.error('Scheduled blocklist sync error', err as Error);
     }
   }
 });
@@ -171,9 +225,10 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
         return { isRepost: false };
       }
 
-      const [historicalPost, opProfile] = await Promise.all([
+      const [historicalPost, opProfile, knownBotSet] = await Promise.all([
         searchSubredditHistoricalPosts(message.subreddit, message.title),
-        fetchUserProfile(message.author).catch(() => null)
+        fetchUserProfile(message.author).catch(() => null),
+        getKnownBotSet()
       ]);
       let topComments: string[] = [];
 
@@ -181,6 +236,7 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
         topComments = await fetchHistoricalTopComments(historicalPost.id);
       }
 
+      const cleanAuthor = message.author.replace(/^u\//, '').trim().toLowerCase();
       const opScored = scoreUser(
         message.author,
         opProfile || undefined,
@@ -190,6 +246,7 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
         {
           isOp: true,
           isExactTitleRepost: Boolean(historicalPost),
+          isKnownBotDatabase: knownBotSet.has(cleanAuthor),
           deflectThreshold: settings.deflectThreshold,
           flagThreshold: settings.flagThreshold,
           userWhitelist: settings.whitelist
@@ -319,6 +376,10 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
       return { success: true };
     }
 
+    case 'SYNC_BOT_DATABASE': {
+      return await runScheduledBlocklistSync();
+    }
+
     default:
       throw new Error(`Unknown message type: ${(message as any).type}`);
   }
@@ -348,9 +409,13 @@ async function processUncachedUsers(
 ): Promise<Record<string, ScoredUser>> {
   const newlyScored: Record<string, ScoredUser> = {};
   let pendingPushBatch: Record<string, ScoredUser> = {};
+  const knownBotSet = await getKnownBotSet();
 
   for (const username of usernames) {
     try {
+      const cleanName = username.replace(/^u\//, '').trim().toLowerCase();
+      let isKnownBot = knownBotSet.has(cleanName);
+
       const profile = await fetchUserProfile(username);
       let comments: RedditCommentActivity[] = [];
 
@@ -358,7 +423,7 @@ async function processUncachedUsers(
         comments = await fetchUserComments(username);
       }
 
-      const scored = scoreUser(
+      let scored = scoreUser(
         username,
         profile || undefined,
         comments,
@@ -367,9 +432,33 @@ async function processUncachedUsers(
         {
           deflectThreshold: settings.deflectThreshold,
           flagThreshold: settings.flagThreshold,
-          userWhitelist: settings.whitelist
+          userWhitelist: settings.whitelist,
+          isKnownBotDatabase: isKnownBot
         }
       );
+
+      // For borderline FLAG accounts not yet in our local synced database, verify against r/BotBouncer on demand
+      if (scored.classification === 'FLAG' && !isKnownBot) {
+        const confirmedOnBotBouncer = await checkBotBouncerUser(username);
+        if (confirmedOnBotBouncer) {
+          isKnownBot = true;
+          knownBotSet.add(cleanName);
+          await mergeKnownBots([cleanName]);
+          scored = scoreUser(
+            username,
+            profile || undefined,
+            comments,
+            undefined,
+            undefined,
+            {
+              deflectThreshold: settings.deflectThreshold,
+              flagThreshold: settings.flagThreshold,
+              userWhitelist: settings.whitelist,
+              isKnownBotDatabase: true
+            }
+          );
+        }
+      }
 
       // If user is deflected and auto-block is enabled, block them on Reddit
       if (scored.classification === 'DEFLECT' && settings.autoBlockReddit && !scored.isBlockedOnReddit) {

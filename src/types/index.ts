@@ -29,6 +29,10 @@ export interface RedditProfileData {
   isSuspended?: boolean;
   over18?: boolean;
   isMod?: boolean;
+  hasVerifiedEmail?: boolean;
+  isGold?: boolean;
+  isEmployee?: boolean;
+  hasCustomAvatar?: boolean;
 }
 
 export interface RedditCommentActivity {
@@ -38,6 +42,8 @@ export interface RedditCommentActivity {
   createdUtc: number;
   body: string;
   score: number;
+  edited?: boolean | number;
+  isSubmitter?: boolean;
 }
 
 export interface RedditSubmission {
@@ -65,6 +71,7 @@ export interface CompactCleanRecord {
 export interface ScoredUser {
   username: string;
   score: number;
+  humanityScore?: number;
   classification: Classification;
   breakdown: ThreatRuleHit[];
   evaluatedAt: number;
@@ -120,7 +127,8 @@ export type BackgroundMessage =
   | { type: 'RECORD_DEFLECTION'; username: string; points: number; breakdown?: ThreatRuleHit[] }
   | { type: 'ADD_WHITELIST'; username: string }
   | { type: 'REMOVE_WHITELIST'; username: string }
-  | { type: 'INVALIDATE_USER'; username: string };
+  | { type: 'INVALIDATE_USER'; username: string }
+  | { type: 'SYNC_BOT_DATABASE' };
 
 export type TabMessage =
   | { type: 'USERS_EVALUATED'; users: Record<string, ScoredUser> };

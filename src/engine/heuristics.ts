@@ -1,7 +1,25 @@
-import { RedditCommentActivity, ThreatRuleHit } from '../types';
+import { RedditCommentActivity, RedditProfileData, ThreatRuleHit } from '../types';
 
 // Regex for Reddit's auto-generated username format (e.g. Word-Word-1234 or Word_Word_1234)
 export const AUTO_USERNAME_REGEX = /^[A-Z][a-z]+[-_][A-Z][a-z]+[-_]?\d{2,5}$/i;
+
+// Known free-karma exchange and bot-incubator subreddits
+export const KARMA_FARM_SUBREDDITS = new Set([
+  'freekarma4u',
+  'freekarma4you',
+  'karma4free',
+  'upvote',
+  'freekarma',
+  'getkarma',
+  'karmaroulette',
+  'freekarmasubreddit',
+  'upvoteforupvote',
+  'karmafarming'
+]);
+
+// Regex for mixed-script homoglyph evasion within a single word (Latin + Cyrillic/Greek in same token)
+export const HOMOGLYPH_MIXED_WORD_REGEX =
+  /(?:[a-zA-Z]+[\u0400-\u04FF\u0370-\u03FF]+|[\u0400-\u04FF\u0370-\u03FF]+[a-zA-Z]+)/;
 
 // Regex for unescaped scraper HTML entity artifacts
 export const UNESCAPED_ENTITY_REGEX = /&(?:amp|quot|apos|lt|gt|#39|#x27|nbsp);|&amp;amp;/i;
@@ -398,5 +416,339 @@ export function isStolenCommentMatch(currentBody: string, historicalBody: string
   }
 
   return false;
+}
+
+/**
+ * 16. Check for participation in known Karma-Farming / Bot-Incubator Subreddits
+ */
+export function evaluateKarmaFarmSubreddits(comments: RedditCommentActivity[]): ThreatRuleHit | null {
+  if (!comments || comments.length === 0) return null;
+
+  const matchedSubs = new Set<string>();
+  let hitCount = 0;
+
+  for (const c of comments) {
+    const sub = (c.subreddit || '').toLowerCase().replace(/^r\//, '').trim();
+    if (KARMA_FARM_SUBREDDITS.has(sub)) {
+      matchedSubs.add(sub);
+      hitCount++;
+    }
+  }
+
+  if (hitCount >= 2) {
+    return {
+      ruleId: 'karma_farm_footprint',
+      category: 'syndicate',
+      name: 'Karma-Farming Subreddit Footprint',
+      points: 55,
+      description: `Found ${hitCount} comments in bot-incubator subreddits (r/${Array.from(matchedSubs).join(', r/')})`
+    };
+  }
+
+  if (hitCount === 1) {
+    return {
+      ruleId: 'karma_farm_footprint',
+      category: 'syndicate',
+      name: 'Karma-Farming Subreddit Footprint',
+      points: 40,
+      description: `Activity detected in known karma-farming subreddit r/${Array.from(matchedSubs)[0]}`
+    };
+  }
+
+  return null;
+}
+
+/**
+ * 17. Check for Unverified Email on Young or Low-Karma Accounts
+ */
+export function evaluateUnverifiedEmail(
+  profile: RedditProfileData,
+  nowUtc = Math.floor(Date.now() / 1000)
+): ThreatRuleHit | null {
+  if (profile.hasVerifiedEmail !== false) return null;
+
+  const ageDays = profile.createdUtc ? (nowUtc - profile.createdUtc) / 86400 : 0;
+  if (ageDays < 30 || profile.totalKarma < 100) {
+    return {
+      ruleId: 'unverified_email_account',
+      category: 'profile',
+      name: 'Unverified Email on Low-Trust Profile',
+      points: 15,
+      description: 'Account lacks a verified email address while under 30 days old or below 100 karma'
+    };
+  }
+  return null;
+}
+
+/**
+ * 18. Check for NSFW Karma-Funnel Profile Pattern
+ * High link karma, near-zero comment engagement, and NSFW profile flag
+ */
+export function evaluateNsfwFunnelProfile(profile: RedditProfileData): ThreatRuleHit | null {
+  if (!profile.over18) return null;
+
+  if (
+    profile.linkKarma >= 200 &&
+    profile.commentKarma < 50 &&
+    profile.linkKarma > Math.max(1, profile.commentKarma) * 5
+  ) {
+    return {
+      ruleId: 'nsfw_funnel_profile',
+      category: 'profile',
+      name: 'NSFW Link-Farming Funnel Profile',
+      points: 30,
+      description: `NSFW-flagged account with disproportionate post karma (${profile.linkKarma}) and minimal comment history (${profile.commentKarma})`
+    };
+  }
+  return null;
+}
+
+/**
+ * 19. Check for Mixed-Script Homoglyph Filter Evasion (e.g. Cyrillic 'а'/'е' mixed into Latin words)
+ */
+export function evaluateScriptHomoglyphBleed(
+  comments: RedditCommentActivity[] = [],
+  bio = '',
+  commentText = '',
+  submissionTitle = ''
+): ThreatRuleHit | null {
+  const texts = [bio, commentText, submissionTitle, ...comments.map((c) => c.body)].filter(Boolean);
+
+  for (const text of texts) {
+    if (HOMOGLYPH_MIXED_WORD_REGEX.test(text)) {
+      return {
+        ruleId: 'script_homoglyph_bleed',
+        category: 'artifacts',
+        name: 'Mixed-Script Homoglyph Filter Evasion',
+        points: 50,
+        description: 'Detected Cyrillic/Greek homoglyphs mixed inside Latin words to bypass spam filters'
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * 20. Check for LLM Slop Cadence & Repetitive Comment Templates
+ */
+export function evaluateLlmAndTemplateCadence(comments: RedditCommentActivity[]): ThreatRuleHit | null {
+  if (!comments || comments.length < 6) return null;
+
+  const validBodies = comments
+    .map((c) => (c.body || '').trim())
+    .filter((b) => b.length >= 12);
+
+  if (validBodies.length < 6) return null;
+
+  // Check A: Exact normalized self-duplicate comments or repetitive 3-word opening prefixes
+  const normalizedCounts = new Map<string, number>();
+  const prefixCounts = new Map<string, number>();
+
+  for (const body of validBodies) {
+    const norm = normalizeComparisonText(body);
+    if (norm.length >= 15) {
+      normalizedCounts.set(norm, (normalizedCounts.get(norm) || 0) + 1);
+    }
+    const words = norm.split(' ').filter(Boolean);
+    if (words.length >= 4) {
+      const prefix = words.slice(0, 3).join(' ');
+      prefixCounts.set(prefix, (prefixCounts.get(prefix) || 0) + 1);
+    }
+  }
+
+  const maxDuplicateCount = Math.max(0, ...normalizedCounts.values());
+  const maxPrefixCount = Math.max(0, ...prefixCounts.values());
+
+  if (maxDuplicateCount >= 3 || (validBodies.length >= 6 && maxPrefixCount / validBodies.length >= 0.4)) {
+    return {
+      ruleId: 'repetitive_comment_templates',
+      category: 'content',
+      name: 'Repetitive Template / Copy-Paste Commenting',
+      points: 45,
+      description:
+        maxDuplicateCount >= 3
+          ? `Repeated identical comment body ${maxDuplicateCount} times across recent history`
+          : `${Math.round((maxPrefixCount / validBodies.length) * 100)}% of recent comments begin with the exact same 3-word template`
+    };
+  }
+
+  // Check B: LLM Slop Uniformity + Em-Dash Overuse
+  if (validBodies.length >= 8) {
+    const emDashCount = validBodies.filter((b) => b.includes('—') || b.includes(' -- ')).length;
+    const lengths = validBodies.map((b) => b.length);
+    const meanLen = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+    const variance = lengths.reduce((acc, l) => acc + Math.pow(l - meanLen, 2), 0) / lengths.length;
+    const stdDev = Math.sqrt(variance);
+    const cv = meanLen > 0 ? stdDev / meanLen : 1;
+    const hasShortCasual = comments.some((c) => (c.body || '').trim().length > 0 && (c.body || '').trim().length < 25);
+
+    if (emDashCount / validBodies.length >= 0.4 && meanLen >= 50 && meanLen <= 350 && cv < 0.35 && !hasShortCasual) {
+      return {
+        ruleId: 'llm_slop_cadence',
+        category: 'content',
+        name: 'Synthetic LLM Comment Cadence',
+        points: 35,
+        description: `High em-dash density (${Math.round((emDashCount / validBodies.length) * 100)}%) paired with robotic comment length uniformity (CV ${cv.toFixed(2)})`
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Helper to compute circular mean UTC hour (0..24) and concentration R (0..1)
+ */
+function computeCircularHourStats(timestamps: number[]): { meanHour: number; concentration: number } {
+  if (timestamps.length === 0) return { meanHour: 0, concentration: 0 };
+
+  let sinSum = 0;
+  let cosSum = 0;
+
+  for (const ts of timestamps) {
+    const date = new Date(ts * 1000);
+    const fractionalHour = date.getUTCHours() + date.getUTCMinutes() / 60;
+    const angle = (2 * Math.PI * fractionalHour) / 24;
+    sinSum += Math.sin(angle);
+    cosSum += Math.cos(angle);
+  }
+
+  const meanSin = sinSum / timestamps.length;
+  const meanCos = cosSum / timestamps.length;
+  const concentration = Math.sqrt(meanSin * meanSin + meanCos * meanCos);
+
+  let meanAngle = Math.atan2(meanSin, meanCos);
+  if (meanAngle < 0) meanAngle += 2 * Math.PI;
+  const meanHour = (meanAngle * 24) / (2 * Math.PI);
+
+  return { meanHour, concentration };
+}
+
+/**
+ * 21. Inferred Country/Region Timezone Shift Detection (Compromised / Sold Account Detector)
+ * Detects when an account's active circadian window shifts by >= 6 hours after a dormancy gap
+ */
+export function evaluateTimezoneShiftAnomaly(comments: RedditCommentActivity[]): ThreatRuleHit | null {
+  if (!comments || comments.length < 12) return null;
+
+  const sorted = [...comments].sort((a, b) => b.createdUtc - a.createdUtc);
+
+  // Find the largest dormancy gap (>= 14 days) that splits recent vs historical comments with >= 6 on each side
+  let bestSplitIndex = -1;
+  let maxGapDays = 0;
+
+  for (let i = 5; i <= sorted.length - 7; i++) {
+    const gapDays = (sorted[i].createdUtc - sorted[i + 1].createdUtc) / 86400;
+    if (gapDays >= 14 && gapDays > maxGapDays) {
+      maxGapDays = gapDays;
+      bestSplitIndex = i;
+    }
+  }
+
+  if (bestSplitIndex === -1) return null;
+
+  const recentTimestamps = sorted.slice(0, bestSplitIndex + 1).map((c) => c.createdUtc);
+  const olderTimestamps = sorted.slice(bestSplitIndex + 1).map((c) => c.createdUtc);
+
+  const recentStats = computeCircularHourStats(recentTimestamps);
+  const olderStats = computeCircularHourStats(olderTimestamps);
+
+  // Require both epochs to have a clear regional circadian concentration
+  if (recentStats.concentration < 0.35 || olderStats.concentration < 0.35) {
+    return null;
+  }
+
+  const rawDiff = Math.abs(recentStats.meanHour - olderStats.meanHour);
+  const circularHourShift = Math.min(rawDiff, 24 - rawDiff);
+
+  if (circularHourShift >= 6) {
+    return {
+      ruleId: 'timezone_shift_compromise',
+      category: 'dormancy',
+      name: 'Geographic Timezone Shift (Account Handoff)',
+      points: 40,
+      description: `Active circadian peak shifted by ${circularHourShift.toFixed(1)}h UTC after a ${Math.round(maxGapDays)}d gap, typical of a sold or compromised account`
+    };
+  }
+
+  return null;
+}
+
+/**
+ * 22. Evaluate Active "Not-a-Bot" (Humanity) Signals
+ * Extracts affirmative organic human traits from comment history and profile metadata
+ */
+export function evaluateHumanActivitySignals(
+  comments: RedditCommentActivity[] = [],
+  profile?: RedditProfileData
+): ThreatRuleHit[] {
+  const hits: ThreatRuleHit[] = [];
+
+  if (comments.length > 0) {
+    // 1. Edited comments (fixing typos or adding follow-up notes)
+    const editedCount = comments.filter((c) => c.edited !== undefined && c.edited !== false && Boolean(c.edited)).length;
+    if (editedCount >= 2) {
+      hits.push({
+        ruleId: 'human_edited_comments',
+        category: 'safe_harbor',
+        name: 'Organic Comment Edits Safe Harbor',
+        points: -20,
+        description: `User has edited ${editedCount} recent comments (rare for automated scripts)`
+      });
+    }
+
+    // 2. OP Thread Engagement (replying inside their own submissions)
+    const opReplyCount = comments.filter((c) => c.isSubmitter === true).length;
+    if (opReplyCount >= 2) {
+      hits.push({
+        ruleId: 'human_op_engagement',
+        category: 'safe_harbor',
+        name: 'Active OP Thread Participation Safe Harbor',
+        points: -20,
+        description: `User actively replies to comments inside their own submissions (${opReplyCount} OP replies)`
+      });
+    }
+
+    // 3. Natural Comment Length Variance (mixing short reactions and detailed paragraphs)
+    if (comments.length >= 10) {
+      const lengths = comments.map((c) => (c.body || '').trim().length).filter((l) => l > 0);
+      if (lengths.length >= 10) {
+        const mean = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+        const variance = lengths.reduce((acc, l) => acc + Math.pow(l - mean, 2), 0) / lengths.length;
+        const cv = mean > 0 ? Math.sqrt(variance) / mean : 0;
+        const hasShort = lengths.some((l) => l < 25);
+        const hasLong = lengths.some((l) => l > 180);
+
+        if (hasShort && hasLong && cv > 0.75) {
+          hits.push({
+            ruleId: 'human_organic_diversity',
+            category: 'safe_harbor',
+            name: 'Organic Lexical Length Diversity Safe Harbor',
+            points: -15,
+            description: 'Exhibits natural human variance between brief reactions and detailed paragraphs'
+          });
+        }
+      }
+    }
+  }
+
+  // 4. Verified Profile & Veteran Customization Signals
+  if (profile) {
+    if (
+      profile.isEmployee ||
+      profile.isGold ||
+      (profile.hasVerifiedEmail === true && profile.hasCustomAvatar === true && profile.totalKarma >= 500)
+    ) {
+      hits.push({
+        ruleId: 'human_verified_veteran_traits',
+        category: 'safe_harbor',
+        name: 'Verified Custom Profile Safe Harbor',
+        points: -15,
+        description: 'Account has verified email, custom avatar/Gold status, and established reputation'
+      });
+    }
+  }
+
+  return hits;
 }
 
