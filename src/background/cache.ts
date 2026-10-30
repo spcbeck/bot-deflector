@@ -197,29 +197,35 @@ export async function updateSettings(updates: Partial<ExtensionSettings>): Promi
   return next;
 }
 
+let statsUpdateLock: Promise<unknown> = Promise.resolve();
+
 export async function getStats(): Promise<DeflectorStats> {
   const res = await chrome.storage.local.get(STATS_KEY);
   return { ...DEFAULT_STATS, ...(res[STATS_KEY] as DeflectorStats | undefined) };
 }
 
-export async function incrementStats(updates: {
+export function incrementStats(updates: {
   deflected?: number;
   scanned?: number;
   cacheHits?: number;
   blocked?: number;
   quotaExceeded?: boolean;
 }): Promise<DeflectorStats> {
-  const current = await getStats();
-  const next: DeflectorStats = {
-    deflectedCount: current.deflectedCount + (updates.deflected || 0),
-    scannedCount: current.scannedCount + (updates.scanned || 0),
-    cacheHitCount: current.cacheHitCount + (updates.cacheHits || 0),
-    blockedCount: current.blockedCount + (updates.blocked || 0),
-    quotaExceeded: updates.quotaExceeded !== undefined ? updates.quotaExceeded : current.quotaExceeded,
-    lastActive: Date.now()
-  };
-  await chrome.storage.local.set({ [STATS_KEY]: next });
-  return next;
+  const nextOp = statsUpdateLock.then(async () => {
+    const current = await getStats();
+    const next: DeflectorStats = {
+      deflectedCount: current.deflectedCount + (updates.deflected || 0),
+      scannedCount: current.scannedCount + (updates.scanned || 0),
+      cacheHitCount: current.cacheHitCount + (updates.cacheHits || 0),
+      blockedCount: current.blockedCount + (updates.blocked || 0),
+      quotaExceeded: updates.quotaExceeded !== undefined ? updates.quotaExceeded : current.quotaExceeded,
+      lastActive: Date.now()
+    };
+    await chrome.storage.local.set({ [STATS_KEY]: next });
+    return next;
+  });
+  statsUpdateLock = nextOp.catch(() => {});
+  return nextOp;
 }
 
 /**
@@ -403,10 +409,35 @@ export async function getRecentThreatUsers(limit = 30): Promise<ScoredUser[]> {
           threats.push(record);
         }
       }
+    } else if (key.startsWith(LEGACY_CACHE_PREFIX)) {
+      const record = value as ScoredUser;
+      if (record && record.username && (record.classification === 'DEFLECT' || record.classification === 'FLAG')) {
+        const clean = record.username.toLowerCase();
+        if (!seenUsernames.has(clean)) {
+          seenUsernames.add(clean);
+          threats.push(record);
+          chrome.storage.local.set({ [`${THREAT_CACHE_PREFIX}${clean}`]: record }).catch(() => {});
+          chrome.storage.local.remove(key).catch(() => {});
+        }
+      }
     }
   }
 
   threats.sort((a, b) => (b.evaluatedAt || 0) - (a.evaluatedAt || 0));
   return threats.slice(0, limit);
 }
+
+export const REDDIT_BLOCKED_HISTORY_KEY = 'reddit_blocked_history';
+
+export async function getBlockedUsersHistory(): Promise<{ username: string; date?: number }[]> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return [];
+  const res = await chrome.storage.local.get(REDDIT_BLOCKED_HISTORY_KEY);
+  return (res[REDDIT_BLOCKED_HISTORY_KEY] as { username: string; date?: number }[]) || [];
+}
+
+export async function saveBlockedUsersHistory(blockedUsers: { username: string; date?: number }[]): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+  await chrome.storage.local.set({ [REDDIT_BLOCKED_HISTORY_KEY]: blockedUsers });
+}
+
 

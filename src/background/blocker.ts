@@ -106,3 +106,49 @@ export async function blockRedditUser(username: string): Promise<BlockResult> {
     }
   });
 }
+
+export interface RedditBlockedUserItem {
+  username: string;
+  date?: number;
+}
+
+export async function fetchRedditBlockedUsers(): Promise<RedditBlockedUserItem[]> {
+  return requestQueue.enqueue(async () => {
+    try {
+      const res = await fetch('https://www.reddit.com/prefs/blocked.json', {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!res.ok) {
+        console.warn(`[BotDeflector Blocker] Could not fetch blocked users list, status: ${res.status}`);
+        return [];
+      }
+
+      const json = await res.json();
+      const children = json?.data?.children;
+      if (!Array.isArray(children)) {
+        return [];
+      }
+
+      const results: RedditBlockedUserItem[] = [];
+      for (const item of children) {
+        const name = (item?.name || item?.data?.name || '').trim();
+        if (name) {
+          const dateSec = item?.date ?? item?.data?.date;
+          results.push({
+            username: name,
+            date: typeof dateSec === 'number' ? dateSec * 1000 : undefined
+          });
+        }
+      }
+
+      return results;
+    } catch (err) {
+      console.warn('[BotDeflector Blocker] Error fetching Reddit blocked users:', err);
+      return [];
+    }
+  });
+}
+

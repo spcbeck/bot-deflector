@@ -100,6 +100,12 @@ export interface CaughtBotsResponse {
   recentBots: ScoredUser[];
 }
 
+export interface BlockedUserRecord {
+  username: string;
+  date?: number;
+  scoredUser?: ScoredUser;
+}
+
 export type BackgroundMessage =
   | { type: 'CHECK_USERS'; usernames: string[] }
   | { type: 'CHECK_SUBMISSION'; title: string; subreddit: string; author: string }
@@ -110,6 +116,7 @@ export type BackgroundMessage =
   | { type: 'GET_STATS' }
   | { type: 'GET_TAB_STATS'; tabId?: number }
   | { type: 'GET_CAUGHT_BOTS'; tabId?: number }
+  | { type: 'GET_BLOCKED_USERS'; forceSync?: boolean }
   | { type: 'RECORD_DEFLECTION'; username: string; points: number; breakdown?: ThreatRuleHit[] }
   | { type: 'ADD_WHITELIST'; username: string }
   | { type: 'REMOVE_WHITELIST'; username: string }

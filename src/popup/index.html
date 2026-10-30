@@ -59,10 +59,12 @@
         <div class="bd-threats-title-group">
           <span class="bd-threats-title">CAUGHT THREATS</span>
           <span class="bd-threats-count-badge" id="threats-badge">0</span>
+          <button class="bd-sync-btn" id="sync-blocked-btn" title="Sync blocked accounts from Reddit">⟳ SYNC</button>
         </div>
         <div class="bd-threats-tabs" id="threats-tab-selector">
           <button class="bd-threats-tab-btn active" id="tab-btn-current" data-view="current">THIS TAB (0)</button>
           <button class="bd-threats-tab-btn" id="tab-btn-recent" data-view="recent">ALL RECENT (0)</button>
+          <button class="bd-threats-tab-btn" id="tab-btn-blocked" data-view="blocked">BLOCKED (0)</button>
         </div>
       </div>
 
@@ -74,6 +76,10 @@
           <span class="bd-empty-icon">■</span>
           <span class="bd-empty-text">NO BOTS CAUGHT YET &bull; FEED CLEAN</span>
         </div>
+      </div>
+
+      <div class="bd-threats-footer">
+        <a href="https://www.reddit.com/settings/privacy" target="_blank" rel="noopener noreferrer" class="bd-footer-link">→ REDDIT PRIVACY SETTINGS ↗</a>
       </div>
     </section>
 

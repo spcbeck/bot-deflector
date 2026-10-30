@@ -340,3 +340,63 @@ export function evaluateEstablishedUser(
   }
   return null;
 }
+
+/**
+ * Normalize text for title/comment similarity comparisons
+ */
+export function normalizeComparisonText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 14. Check if two submission titles represent an exact or near-exact duplicate repost
+ * Guards against short generic titles ("meirl", "update", "help") triggering substring false positives
+ */
+export function isDuplicateTitle(currentTitle: string, historicalTitle: string): boolean {
+  const normCurrent = normalizeComparisonText(currentTitle);
+  const normExisting = normalizeComparisonText(historicalTitle);
+
+  if (!normCurrent || !normExisting) return false;
+
+  if (normCurrent === normExisting) {
+    return normCurrent.length >= 6;
+  }
+
+  const minLen = Math.min(normCurrent.length, normExisting.length);
+  const maxLen = Math.max(normCurrent.length, normExisting.length);
+
+  if (minLen < 15) return false;
+
+  if (normExisting.includes(normCurrent) || normCurrent.includes(normExisting)) {
+    return minLen / maxLen >= 0.8;
+  }
+
+  return false;
+}
+
+/**
+ * 15. Check if a comment is a stolen copy of an archival top comment
+ * Guards against short commonplace phrases matching inside long paragraphs
+ */
+export function isStolenCommentMatch(currentBody: string, historicalBody: string): boolean {
+  const cleanCurrent = normalizeComparisonText(currentBody);
+  const cleanHist = normalizeComparisonText(historicalBody);
+
+  if (cleanCurrent.length < 20 || cleanHist.length < 20) return false;
+
+  if (cleanCurrent === cleanHist) return true;
+
+  const minLen = Math.min(cleanCurrent.length, cleanHist.length);
+  const maxLen = Math.max(cleanCurrent.length, cleanHist.length);
+
+  if (cleanHist.includes(cleanCurrent) || cleanCurrent.includes(cleanHist)) {
+    return minLen / maxLen >= 0.75;
+  }
+
+  return false;
+}
+

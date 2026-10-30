@@ -4,11 +4,16 @@ import {
   addTabDeflectedUsers,
   clearTabDeflections,
   CLEAN_CACHE_PREFIX,
+  getBlockedUsersHistory,
   getRecentThreatUsers,
   getSessionModhash,
+  getStats,
   getTabDeflectedCount,
   getTabDeflectedUsers,
   getTabThreatUsers,
+  incrementStats,
+  LEGACY_CACHE_PREFIX,
+  saveBlockedUsersHistory,
   setSessionModhash,
   sweepExpiredCacheRecords,
   THREAT_CACHE_PREFIX
@@ -281,4 +286,111 @@ test('SW-6: Recent Threat Users Retrieval filters expired, deduplicates, and sor
     (globalThis as any).chrome = originalChrome;
   }
 });
+
+test('SW-7: Legacy Cache Migration & Blocked User History Persistence', async () => {
+  const originalChrome = (globalThis as any).chrome;
+  const mockStorage: Record<string, any> = {};
+
+  (globalThis as any).chrome = {
+    storage: {
+      local: {
+        get: async (keys: any) => {
+          if (keys === null) return { ...mockStorage };
+          const result: Record<string, any> = {};
+          const keyArray = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyArray) {
+            if (k in mockStorage) result[k] = mockStorage[k];
+          }
+          return result;
+        },
+        set: async (items: Record<string, any>) => {
+          Object.assign(mockStorage, items);
+        },
+        remove: async (keys: string | string[]) => {
+          const keyArray = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyArray) {
+            delete mockStorage[k];
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    const now = Date.now();
+
+    // 1. Put legacy bot in storage
+    mockStorage[`${LEGACY_CACHE_PREFIX}old_caught_bot`] = {
+      username: 'old_caught_bot',
+      score: 88,
+      classification: 'DEFLECT',
+      breakdown: [{ ruleId: 'cadence', category: 'cadence', name: 'Inhuman Cadence', points: 50, description: '' }],
+      evaluatedAt: now - 5000
+    };
+
+    const threats = await getRecentThreatUsers(10);
+    const migrated = threats.find((t) => t.username === 'old_caught_bot');
+    assert.ok(migrated);
+    assert.strictEqual(migrated?.score, 88);
+
+    // Verify migrated into THREAT_CACHE_PREFIX and deleted from LEGACY
+    assert.ok(mockStorage[`${THREAT_CACHE_PREFIX}old_caught_bot`]);
+    assert.strictEqual(mockStorage[`${LEGACY_CACHE_PREFIX}old_caught_bot`], undefined);
+
+    // 2. Test blocked user history persistence
+    const blockedData = [
+      { username: 'banned_spammer_1', date: 1726078884000 },
+      { username: 'banned_spammer_2', date: 1726078800000 }
+    ];
+    await saveBlockedUsersHistory(blockedData);
+
+    const retrieved = await getBlockedUsersHistory();
+    assert.strictEqual(retrieved.length, 2);
+    assert.strictEqual(retrieved[0].username, 'banned_spammer_1');
+    assert.strictEqual(retrieved[1].username, 'banned_spammer_2');
+  } finally {
+    (globalThis as any).chrome = originalChrome;
+  }
+});
+
+test('SW-8: Concurrent incrementStats calls serialize without race condition', async () => {
+  const originalChrome = (globalThis as any).chrome;
+  const mockStorage: Record<string, any> = {};
+
+  (globalThis as any).chrome = {
+    storage: {
+      local: {
+        get: async (keys: any) => {
+          const result: Record<string, any> = {};
+          const keyArray = Array.isArray(keys) ? keys : [keys];
+          for (const k of keyArray) {
+            if (k in mockStorage) result[k] = mockStorage[k];
+          }
+          return result;
+        },
+        set: async (items: Record<string, any>) => {
+          Object.assign(mockStorage, items);
+        }
+      }
+    }
+  };
+
+  try {
+    await Promise.all([
+      incrementStats({ scanned: 1, deflected: 1 }),
+      incrementStats({ scanned: 1, deflected: 0 }),
+      incrementStats({ cacheHits: 5 }),
+      incrementStats({ blocked: 1 })
+    ]);
+
+    const finalStats = await getStats();
+    assert.strictEqual(finalStats.scannedCount, 2);
+    assert.strictEqual(finalStats.deflectedCount, 1);
+    assert.strictEqual(finalStats.cacheHitCount, 5);
+    assert.strictEqual(finalStats.blockedCount, 1);
+  } finally {
+    (globalThis as any).chrome = originalChrome;
+  }
+});
+
 

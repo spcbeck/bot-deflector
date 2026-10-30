@@ -1,10 +1,11 @@
-import { scoreUser } from '../engine/scorer';
-import { BackgroundMessage, ScoredUser, TabMessage } from '../types';
+import { scoreUser, shouldDrilldownComments } from '../engine/scorer';
+import { BackgroundMessage, BlockedUserRecord, RedditCommentActivity, ScoredUser, TabMessage } from '../types';
 import { logger } from '../core/logger';
-import { blockRedditUser } from './blocker';
+import { blockRedditUser, fetchRedditBlockedUsers } from './blocker';
 import {
   addTabDeflectedUsers,
   clearTabDeflections,
+  getBlockedUsersHistory,
   getCachedUser,
   getCachedUsersBatch,
   getRecentThreatUsers,
@@ -14,6 +15,7 @@ import {
   getTabThreatUsers,
   incrementStats,
   invalidateCachedUser,
+  saveBlockedUsersHistory,
   setCachedUser,
   sweepExpiredCacheRecords,
   updateSettings
@@ -169,7 +171,10 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
         return { isRepost: false };
       }
 
-      const historicalPost = await searchSubredditHistoricalPosts(message.subreddit, message.title);
+      const [historicalPost, opProfile] = await Promise.all([
+        searchSubredditHistoricalPosts(message.subreddit, message.title),
+        fetchUserProfile(message.author).catch(() => null)
+      ]);
       let topComments: string[] = [];
 
       if (historicalPost) {
@@ -178,11 +183,12 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
 
       const opScored = scoreUser(
         message.author,
-        undefined,
+        opProfile || undefined,
         undefined,
         undefined,
         message.title,
         {
+          isOp: true,
           isExactTitleRepost: Boolean(historicalPost),
           deflectThreshold: settings.deflectThreshold,
           flagThreshold: settings.flagThreshold,
@@ -238,6 +244,33 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
       return { tabBots, recentBots };
     }
 
+    case 'GET_BLOCKED_USERS': {
+      let history = await getBlockedUsersHistory();
+      if (message.forceSync || history.length === 0) {
+        const fresh = await fetchRedditBlockedUsers();
+        if (fresh.length > 0) {
+          history = fresh;
+          await saveBlockedUsersHistory(history);
+        }
+      }
+
+      // Cross-reference with threat cache to attach threat breakdown if available
+      const usernames = history.map((h) => h.username);
+      const batch = await getCachedUsersBatch(usernames);
+
+      const enriched: BlockedUserRecord[] = history.map((item) => {
+        const clean = item.username.toLowerCase();
+        const scored = batch.get(clean);
+        return {
+          username: item.username,
+          date: item.date,
+          scoredUser: scored || undefined
+        };
+      });
+
+      return { blocked: enriched };
+    }
+
     case 'RECORD_DEFLECTION': {
       const scored: ScoredUser = {
         username: message.username,
@@ -291,9 +324,22 @@ async function handleMessage(message: BackgroundMessage, sender: chrome.runtime.
   }
 }
 
+async function pushEvaluatedUsersToTab(tabId: number, batch: Record<string, ScoredUser>): Promise<void> {
+  if (Object.keys(batch).length === 0) return;
+  try {
+    const pushMessage: TabMessage = {
+      type: 'USERS_EVALUATED',
+      users: { ...batch }
+    };
+    await chrome.tabs.sendMessage(tabId, pushMessage);
+  } catch {
+    // Tab may have navigated or closed
+  }
+}
+
 /**
  * Evaluates uncached users in the background with rate-limited requests,
- * saves to storage, updates tab session badge, and pushes results back to the active tab.
+ * saves to storage, updates tab session badge, and streams results progressively to the active tab.
  */
 async function processUncachedUsers(
   usernames: string[],
@@ -301,22 +347,15 @@ async function processUncachedUsers(
   tabId?: number
 ): Promise<Record<string, ScoredUser>> {
   const newlyScored: Record<string, ScoredUser> = {};
+  let pendingPushBatch: Record<string, ScoredUser> = {};
 
   for (const username of usernames) {
     try {
       const profile = await fetchUserProfile(username);
-      let comments: any[] = [];
+      let comments: RedditCommentActivity[] = [];
 
-      if (profile) {
-        const ageDays = (Date.now() / 1000 - profile.createdUtc) / 86400;
-        const isSuspiciousProfile =
-          (ageDays >= 60 && ageDays <= 1000 && profile.totalKarma < 150) ||
-          (profile.linkKarma > 5000 && profile.commentKarma < 30) ||
-          profile.totalKarma < 0;
-
-        if (isSuspiciousProfile && settings.enableCadenceCheck) {
-          comments = await fetchUserComments(username);
-        }
+      if (profile && settings.enableCadenceCheck && shouldDrilldownComments(username, profile, settings.whitelist)) {
+        comments = await fetchUserComments(username);
       }
 
       const scored = scoreUser(
@@ -361,11 +400,23 @@ async function processUncachedUsers(
       });
 
       newlyScored[username] = scored;
+      pendingPushBatch[username] = scored;
 
-      // Update badge progressively if deflected
-      if (tabId && scored.classification === 'DEFLECT') {
-        const count = await addTabDeflectedUsers(tabId, [scored.username]);
-        await updateTabBadge(tabId, count);
+      // Update badge and push to tab immediately when a threat is detected or micro-batch reaches 4
+      if (tabId) {
+        if (scored.classification === 'DEFLECT') {
+          const count = await addTabDeflectedUsers(tabId, [scored.username]);
+          await updateTabBadge(tabId, count);
+        }
+
+        if (
+          scored.classification === 'DEFLECT' ||
+          scored.classification === 'FLAG' ||
+          Object.keys(pendingPushBatch).length >= 4
+        ) {
+          await pushEvaluatedUsersToTab(tabId, pendingPushBatch);
+          pendingPushBatch = {};
+        }
       }
     } catch (err) {
       console.warn(`[BotDeflector] Could not evaluate ${username}:`, err);
@@ -373,17 +424,9 @@ async function processUncachedUsers(
     }
   }
 
-  // Push newly evaluated users back to the sender tab
-  if (tabId && Object.keys(newlyScored).length > 0) {
-    try {
-      const pushMessage: TabMessage = {
-        type: 'USERS_EVALUATED',
-        users: newlyScored
-      };
-      await chrome.tabs.sendMessage(tabId, pushMessage);
-    } catch {
-      // Tab may have navigated or closed
-    }
+  // Flush any remaining newly evaluated users back to the sender tab
+  if (tabId && Object.keys(pendingPushBatch).length > 0) {
+    await pushEvaluatedUsersToTab(tabId, pendingPushBatch);
   }
 
   return newlyScored;

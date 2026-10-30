@@ -18,6 +18,7 @@ class DeflectorLogger {
   private endpoint = 'https://logs.seanbeck.net';
   private app = 'bot-deflector';
   private env = 'production';
+  private remoteEnabled = false;
   private queue: LogEvent[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -33,7 +34,7 @@ class DeflectorLogger {
     this.enqueue('warn', message, context);
   }
 
-  public error(messageOrError: Error | string, errorOrContext?: any, extraContext?: Record<string, unknown>): void {
+  public error(messageOrError: Error | string, errorOrContext?: unknown, extraContext?: Record<string, unknown>): void {
     let msg = '';
     let ctx: Record<string, unknown> = {};
 
@@ -42,7 +43,7 @@ class DeflectorLogger {
       ctx = {
         name: messageOrError.name,
         stack: messageOrError.stack,
-        ...(errorOrContext || {})
+        ...(typeof errorOrContext === 'object' && errorOrContext !== null ? (errorOrContext as Record<string, unknown>) : {})
       };
     } else {
       msg = String(messageOrError);
@@ -54,7 +55,7 @@ class DeflectorLogger {
           ...(extraContext || {})
         };
       } else if (typeof errorOrContext === 'object' && errorOrContext !== null) {
-        ctx = { ...errorOrContext, ...(extraContext || {}) };
+        ctx = { ...(errorOrContext as Record<string, unknown>), ...(extraContext || {}) };
       }
     }
 
@@ -62,6 +63,8 @@ class DeflectorLogger {
   }
 
   private enqueue(level: LogLevel, message: string, context?: Record<string, unknown>): void {
+    if (!this.remoteEnabled) return;
+
     this.queue.push({
       app: this.app,
       env: this.env,
@@ -72,11 +75,11 @@ class DeflectorLogger {
     });
 
     if (this.queue.length >= 20) {
-      this.flush();
+      void this.flush();
     } else if (!this.timer && typeof setTimeout !== 'undefined') {
       this.timer = setTimeout(() => {
         this.timer = null;
-        this.flush();
+        void this.flush();
       }, 2000);
     }
   }

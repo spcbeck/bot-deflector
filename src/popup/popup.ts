@@ -1,6 +1,7 @@
 import {
   BackgroundMessage,
   BackgroundResponse,
+  BlockedUserRecord,
   CaughtBotsResponse,
   DeflectorStats,
   ExtensionSettings,
@@ -17,6 +18,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const threatsBadge = document.getElementById('threats-badge');
   const tabBtnCurrent = document.getElementById('tab-btn-current') as HTMLButtonElement | null;
   const tabBtnRecent = document.getElementById('tab-btn-recent') as HTMLButtonElement | null;
+  const tabBtnBlocked = document.getElementById('tab-btn-blocked') as HTMLButtonElement | null;
+  const syncBlockedBtn = document.getElementById('sync-blocked-btn') as HTMLButtonElement | null;
   const threatsList = document.getElementById('threats-list');
   const threatsEmpty = document.getElementById('threats-empty');
 
@@ -108,10 +111,38 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Caught Threats State & Rendering
-  let activeThreatsView: 'current' | 'recent' = 'current';
+  let activeThreatsView: 'current' | 'recent' | 'blocked' = 'current';
   let hasUserSwitchedView = false;
   let currentTabBots: ScoredUser[] = [];
   let allRecentBots: ScoredUser[] = [];
+  let blockedUsersList: BlockedUserRecord[] = [];
+
+  async function loadBlockedUsers(forceSync = false) {
+    try {
+      if (syncBlockedBtn) {
+        syncBlockedBtn.classList.add('syncing');
+        syncBlockedBtn.textContent = '...';
+      }
+      const res = await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<{ blocked: BlockedUserRecord[] }>>({
+        type: 'GET_BLOCKED_USERS',
+        forceSync
+      });
+      if (res?.success && res.data) {
+        blockedUsersList = res.data.blocked || [];
+        if (!hasUserSwitchedView && currentTabBots.length === 0 && allRecentBots.length === 0 && blockedUsersList.length > 0) {
+          activeThreatsView = 'blocked';
+        }
+        renderThreatsUI();
+      }
+    } catch (err) {
+      console.warn('[BotDeflector Popup] Could not load blocked users:', err);
+    } finally {
+      if (syncBlockedBtn) {
+        syncBlockedBtn.classList.remove('syncing');
+        syncBlockedBtn.textContent = '⟳ SYNC';
+      }
+    }
+  }
 
   async function loadCaughtBots() {
     try {
@@ -125,10 +156,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         allRecentBots = res.data.recentBots || [];
 
         if (!hasUserSwitchedView) {
-          if (currentTabBots.length === 0 && allRecentBots.length > 0) {
-            activeThreatsView = 'recent';
-          } else {
+          if (currentTabBots.length > 0) {
             activeThreatsView = 'current';
+          } else if (allRecentBots.length > 0) {
+            activeThreatsView = 'recent';
+          } else if (blockedUsersList.length > 0) {
+            activeThreatsView = 'blocked';
           }
         }
         renderThreatsUI();
@@ -141,31 +174,174 @@ document.addEventListener('DOMContentLoaded', async () => {
   function renderThreatsUI() {
     if (tabBtnCurrent) {
       tabBtnCurrent.textContent = `THIS TAB (${currentTabBots.length})`;
-      if (activeThreatsView === 'current') {
-        tabBtnCurrent.classList.add('active');
-      } else {
-        tabBtnCurrent.classList.remove('active');
-      }
+      tabBtnCurrent.classList.toggle('active', activeThreatsView === 'current');
     }
     if (tabBtnRecent) {
       tabBtnRecent.textContent = `ALL RECENT (${allRecentBots.length})`;
-      if (activeThreatsView === 'recent') {
-        tabBtnRecent.classList.add('active');
-      } else {
-        tabBtnRecent.classList.remove('active');
-      }
+      tabBtnRecent.classList.toggle('active', activeThreatsView === 'recent');
     }
-
-    const list = activeThreatsView === 'current' ? currentTabBots : allRecentBots;
-    if (threatsBadge) {
-      threatsBadge.textContent = String(list.length);
+    if (tabBtnBlocked) {
+      tabBtnBlocked.textContent = `BLOCKED (${blockedUsersList.length})`;
+      tabBtnBlocked.classList.toggle('active', activeThreatsView === 'blocked');
     }
 
     if (!threatsList || !threatsEmpty) return;
     threatsList.innerHTML = '';
 
+    // Blocked View
+    if (activeThreatsView === 'blocked') {
+      if (threatsBadge) {
+        threatsBadge.textContent = String(blockedUsersList.length);
+      }
+
+      if (blockedUsersList.length === 0) {
+        threatsEmpty.style.display = 'flex';
+        const emptyText = threatsEmpty.querySelector('.bd-empty-text');
+        if (emptyText) emptyText.textContent = 'NO BLOCKED USERS SYNCED • CLICK ⟳ SYNC';
+        return;
+      }
+
+      threatsEmpty.style.display = 'none';
+
+      blockedUsersList.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'bd-threat-card';
+
+        const main = document.createElement('div');
+        main.className = 'bd-threat-main';
+
+        const info = document.createElement('div');
+        info.className = 'bd-threat-info';
+
+        const blockedBadge = document.createElement('span');
+        blockedBadge.className = 'bd-threat-blocked-badge';
+        blockedBadge.textContent = 'BLOCKED ON REDDIT';
+        info.appendChild(blockedBadge);
+
+        if (item.scoredUser) {
+          const scoreBadge = document.createElement('span');
+          scoreBadge.className = 'bd-threat-badge';
+          scoreBadge.textContent = `${item.scoredUser.score} PTS`;
+          info.appendChild(scoreBadge);
+        }
+
+        const userLink = document.createElement('a');
+        userLink.className = 'bd-threat-user-link';
+        userLink.href = `https://www.reddit.com/user/${encodeURIComponent(item.username)}`;
+        userLink.target = '_blank';
+        userLink.rel = 'noopener noreferrer';
+        userLink.textContent = `u/${item.username}`;
+        info.appendChild(userLink);
+
+        main.appendChild(info);
+
+        const actions = document.createElement('div');
+        actions.className = 'bd-threat-actions';
+
+        const whitelistBtn = document.createElement('button');
+        whitelistBtn.className = 'bd-threat-whitelist-btn';
+        whitelistBtn.textContent = 'WHITELIST';
+        whitelistBtn.title = 'Add user to whitelist';
+        whitelistBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          whitelistBtn.disabled = true;
+          whitelistBtn.textContent = '...';
+          const res = await chrome.runtime.sendMessage<BackgroundMessage, BackgroundResponse<ExtensionSettings>>({
+            type: 'ADD_WHITELIST',
+            username: item.username
+          });
+          if (res?.success && res.data) {
+            renderWhitelist(res.data.whitelist);
+            await chrome.runtime.sendMessage({
+              type: 'INVALIDATE_USER',
+              username: item.username
+            });
+            blockedUsersList = blockedUsersList.filter((b) => b.username.toLowerCase() !== item.username.toLowerCase());
+            renderThreatsUI();
+          }
+        });
+        actions.appendChild(whitelistBtn);
+
+        let expandBtn: HTMLButtonElement | null = null;
+        if (item.scoredUser?.breakdown && item.scoredUser.breakdown.length > 0) {
+          expandBtn = document.createElement('button');
+          expandBtn.className = 'bd-threat-expand-btn';
+          expandBtn.textContent = '▼';
+          expandBtn.title = 'Toggle heuristic breakdown';
+          actions.appendChild(expandBtn);
+        }
+
+        main.appendChild(actions);
+        card.appendChild(main);
+
+        const metaParts: string[] = [];
+        if (item.date) {
+          metaParts.push(`Blocked ${new Date(item.date).toLocaleDateString()}`);
+        }
+        if (item.scoredUser?.breakdown) {
+          const topReasons = item.scoredUser.breakdown
+            .filter((b) => b.points > 0)
+            .slice(0, 2)
+            .map((b) => b.name)
+            .join(' • ');
+          if (topReasons) metaParts.push(`[ ${topReasons} ]`);
+        }
+
+        if (metaParts.length > 0) {
+          const reasonsEl = document.createElement('div');
+          reasonsEl.className = 'bd-threat-reasons';
+          reasonsEl.textContent = metaParts.join(' • ');
+          card.appendChild(reasonsEl);
+        }
+
+        if (item.scoredUser?.breakdown && item.scoredUser.breakdown.length > 0 && expandBtn) {
+          const details = document.createElement('div');
+          details.className = 'bd-threat-details';
+          details.style.display = 'none';
+
+          item.scoredUser.breakdown
+            .filter((b) => b.points > 0)
+            .forEach((rule) => {
+              const row = document.createElement('div');
+              row.className = 'bd-detail-row';
+
+              const ruleName = document.createElement('span');
+              ruleName.className = 'bd-detail-rule';
+              ruleName.textContent = rule.name;
+
+              const pts = document.createElement('span');
+              pts.className = 'bd-detail-pts';
+              pts.textContent = `+${rule.points} PTS`;
+
+              row.appendChild(ruleName);
+              row.appendChild(pts);
+              details.appendChild(row);
+            });
+
+          card.appendChild(details);
+
+          expandBtn.addEventListener('click', () => {
+            const isExpanded = details.style.display === 'flex';
+            details.style.display = isExpanded ? 'none' : 'flex';
+            expandBtn!.textContent = isExpanded ? '▼' : '▲';
+          });
+        }
+
+        threatsList.appendChild(card);
+      });
+      return;
+    }
+
+    // Default 'current' or 'recent' View
+    const list = activeThreatsView === 'current' ? currentTabBots : allRecentBots;
+    if (threatsBadge) {
+      threatsBadge.textContent = String(list.length);
+    }
+
     if (list.length === 0) {
       threatsEmpty.style.display = 'flex';
+      const emptyText = threatsEmpty.querySelector('.bd-empty-text');
+      if (emptyText) emptyText.textContent = 'NO BOTS CAUGHT YET • FEED CLEAN';
       return;
     }
 
@@ -313,7 +489,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderThreatsUI();
   });
 
+  tabBtnBlocked?.addEventListener('click', () => {
+    hasUserSwitchedView = true;
+    activeThreatsView = 'blocked';
+    renderThreatsUI();
+  });
+
+  syncBlockedBtn?.addEventListener('click', () => {
+    loadBlockedUsers(true);
+  });
+
   await loadCaughtBots();
+  await loadBlockedUsers(false);
 
   // Load Settings
   let currentSettings: ExtensionSettings | null = null;

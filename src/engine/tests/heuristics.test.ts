@@ -1,15 +1,18 @@
 import assert from 'node:assert';
 import test from 'node:test';
-import { scoreUser } from '../scorer';
+import { scoreUser, shouldDrilldownComments } from '../scorer';
 import {
   evaluateAutoUsername,
   evaluateBioSpam,
   evaluateCircadianAnomaly,
   evaluateDialogueReciprocity,
+  evaluateGhostKarma,
   evaluateKarmaAsymmetry,
   evaluateSleeperGap,
   evaluateUnescapedEntities,
-  evaluateVelocityCadence
+  evaluateVelocityCadence,
+  isDuplicateTitle,
+  isStolenCommentMatch
 } from '../heuristics';
 import { RedditCommentActivity, RedditProfileData } from '../../types';
 
@@ -177,4 +180,83 @@ test('9. Full composite scoring integration', () => {
   const scoredOrganic = scoreUser(profileOrganic.username, profileOrganic, [], 'That is a really interesting perspective.');
   assert.strictEqual(scoredOrganic.classification, 'CLEAN');
   assert.strictEqual(scoredOrganic.score, 0);
+});
+
+test('10. Smart Drilldown Gate (shouldDrilldownComments) covers young bots, sleepers, and ghost karma', () => {
+  const now = 1700000000;
+
+  // Young account (3 days old): MUST drill down to detect velocity/circadian bots
+  const youngBot: RedditProfileData = {
+    username: 'Silent-Ad-4412',
+    createdUtc: now - (3 * 86400),
+    linkKarma: 10,
+    commentKarma: 20,
+    totalKarma: 30,
+    bio: ''
+  };
+  assert.strictEqual(shouldDrilldownComments(youngBot.username, youngBot, [], now), true);
+
+  // Ghost karma candidate (commentKarma > 1000): MUST drill down so evaluateGhostKarma can run
+  const scrubbedBot: RedditProfileData = {
+    username: 'Scrubbed-User-9911',
+    createdUtc: now - (400 * 86400),
+    linkKarma: 10,
+    commentKarma: 3500,
+    totalKarma: 3510,
+    bio: ''
+  };
+  assert.strictEqual(shouldDrilldownComments(scrubbedBot.username, scrubbedBot, [], now), true);
+  const ghostHit = evaluateGhostKarma(scrubbedBot.commentKarma, [
+    { id: '1', linkId: 't3_1', subreddit: 'pics', createdUtc: now - 600, body: 'wow', score: 2 }
+  ]);
+  assert.ok(ghostHit);
+  assert.strictEqual(ghostHit?.ruleId, 'ghost_karma_scrubbed');
+
+  // Established veteran human: should skip unnecessary comment drilldown
+  const veteranHuman: RedditProfileData = {
+    username: 'spbeck',
+    createdUtc: now - (1200 * 86400),
+    linkKarma: 4000,
+    commentKarma: 8000,
+    totalKarma: 12000,
+    bio: ''
+  };
+  assert.strictEqual(shouldDrilldownComments(veteranHuman.username, veteranHuman, [], now), false);
+});
+
+test('11. Title and Comment Similarity Guards Prevent Substring False Positives', () => {
+  // Exact historical title repost matches
+  assert.strictEqual(
+    isDuplicateTitle(
+      'My grandfather built this cabin by hand in 1974',
+      'My grandfather built this cabin by hand in 1974!'
+    ),
+    true
+  );
+
+  // Short generic title must NOT substring-match a long historical title
+  assert.strictEqual(
+    isDuplicateTitle('Update', 'Update on my rescue dog after 6 months of recovery'),
+    false
+  );
+  assert.strictEqual(
+    isDuplicateTitle('meirl', 'meirl when the coffee kicks in at 8am'),
+    false
+  );
+
+  // Exact stolen comment matches
+  const viralComment = 'My dad worked at a cannery for thirty years and told me they always sorted the bruised peaches onto a separate belt for jam.';
+  assert.strictEqual(
+    isStolenCommentMatch(viralComment, viralComment),
+    true
+  );
+
+  // Short commonplace phrase must NOT substring-match inside a long top comment
+  assert.strictEqual(
+    isStolenCommentMatch(
+      'I completely agree with you on this',
+      'I completely agree with you on this, because back in 2018 when our municipality switched contractors the entire recycling schedule fell apart for six months.'
+    ),
+    false
+  );
 });

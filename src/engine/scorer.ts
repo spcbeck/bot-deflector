@@ -1,5 +1,6 @@
 import { Classification, ConfidenceTier, RedditCommentActivity, RedditProfileData, ScoredUser, ThreatRuleHit } from '../types';
 import {
+  AUTO_USERNAME_REGEX,
   evaluateAccountAge,
   evaluateAutoUsername,
   evaluateBioSpam,
@@ -24,6 +25,44 @@ export interface ScoreEvaluationOptions {
   flagThreshold?: number;
   isAccompliceHijacker?: boolean;
   isExactTitleRepost?: boolean;
+}
+
+/**
+ * Determines whether an account warrants fetching recent comment history
+ * for behavioral cadence, circadian anomaly, sleeper gap, and ghost karma checks.
+ */
+export function shouldDrilldownComments(
+  username: string,
+  profile: RedditProfileData,
+  userWhitelist: string[] = [],
+  nowUtc = Math.floor(Date.now() / 1000)
+): boolean {
+  if (!profile || profile.isSuspended || profile.isMod) return false;
+  if (isUserWhitelisted(username, userWhitelist)) return false;
+
+  const clean = username.replace(/^u\//, '').trim();
+  const ageDays = (nowUtc - profile.createdUtc) / 86400;
+
+  // 1. Young accounts (< 60 days): require behavioral check to distinguish organic newcomers from rapid-fire bots
+  if (ageDays < 60) return true;
+
+  // 2. Aged sleeper candidates (60 to 1500 days old with low karma)
+  if (ageDays >= 60 && ageDays <= 1500 && profile.totalKarma < 500) return true;
+
+  // 3. Extreme link-to-comment karma asymmetry
+  if (profile.linkKarma > 5000 && profile.commentKarma < 50) return true;
+  if (profile.linkKarma > 10000 && profile.linkKarma / Math.max(1, profile.commentKarma) > 150) return true;
+
+  // 4. Ghost karma / scrubbed history candidates
+  if (profile.commentKarma > 1000 && (profile.totalKarma <= 5000 || AUTO_USERNAME_REGEX.test(clean))) return true;
+
+  // 5. Auto-generated username without veteran karma safe harbor
+  if (AUTO_USERNAME_REGEX.test(clean) && profile.totalKarma <= 2000) return true;
+
+  // 6. Negative reputation
+  if (profile.totalKarma < 0) return true;
+
+  return false;
 }
 
 export function calculateConfidenceTier(

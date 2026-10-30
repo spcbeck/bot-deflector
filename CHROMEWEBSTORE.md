@@ -95,6 +95,18 @@ To create the verified release `.zip` for upload:
    npm run package
    ```
 2. The script runs type checking, builds the extension, validates that all required files and icons are present, and compresses the contents of `dist/` directly into:
-   * `bot-deflector-v1.2.0.zip`
+   * `bot-deflector-v1.5.0.zip`
    * `bot-deflector.zip`
-3. Upload `bot-deflector-v1.2.0.zip` to the [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole).
+3. Upload `bot-deflector-v1.5.0.zip` to the [Chrome Developer Dashboard](https://chrome.google.com/webstore/devconsole).
+
+---
+
+## 7. Version History
+
+* **v1.5.0 (2026-10-30):**
+  * Added Blocked Users tab and 1-click Reddit blocked accounts sync (`GET_BLOCKED_USERS`) to the popup dashboard.
+  * Expanded Smart Drilldown gate (`shouldDrilldownComments`) to evaluate young accounts (< 60 days), ghost-karma scrubbed accounts, and auto-generated username profiles with 100-comment history windows.
+  * Added progressive micro-batch streaming (`USERS_EVALUATED`) so viewport-prioritized bots collapse immediately without waiting for the entire thread queue.
+  * Fixed SPA navigation detection in content script isolated worlds using the Navigation API and URL transition polling, and prevented dropped scans during concurrent DOM mutations.
+  * Hardened title repost and accomplice comment similarity checks against short-string false positives, and fixed repost banner OP attribution.
+  * Removed third-party telemetry host permission and `unlimitedStorage` to maintain strict local-only privacy compliance.

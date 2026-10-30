@@ -64,7 +64,7 @@ export class OldRedditAdapter implements RedditAdapter {
     scored: ScoredUser,
     onRestore: () => void,
     onWhitelist?: () => void,
-    onBlock?: () => void
+    onBlock?: () => Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }> | void
   ): void {
     const el = comment.element;
     el.dataset.bdProcessed = 'true';

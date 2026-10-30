@@ -25,7 +25,7 @@ export interface RedditAdapter {
     scored: ScoredUser,
     onRestore: () => void,
     onWhitelist?: () => void,
-    onBlock?: () => void
+    onBlock?: () => Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }> | void
   ): void;
   injectSubmissionWarning(
     submission: RedditSubmissionInfo,

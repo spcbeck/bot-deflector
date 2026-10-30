@@ -1,3 +1,4 @@
+import { isDuplicateTitle } from '../engine/heuristics';
 import { RedditCommentActivity, RedditProfileData, RedditSubmission } from '../types';
 import { requestQueue } from './rateLimiter';
 
@@ -38,13 +39,17 @@ export async function fetchUserProfile(username: string): Promise<RedditProfileD
     const data = json?.data;
     if (!data) return null;
 
+    const subTitle = typeof data.subreddit?.title === 'string' ? data.subreddit.title.trim() : '';
+    const subDesc = typeof data.subreddit?.public_description === 'string' ? data.subreddit.public_description.trim() : '';
+    const combinedBio = [subTitle, subDesc].filter(Boolean).join(' — ');
+
     return {
       username: data.name || clean,
       createdUtc: data.created_utc || 0,
       linkKarma: data.link_karma || 0,
       commentKarma: data.comment_karma || 0,
       totalKarma: data.total_karma || ((data.link_karma || 0) + (data.comment_karma || 0)),
-      bio: data.subreddit?.public_description || '',
+      bio: combinedBio,
       isSuspended: Boolean(data.is_suspended),
       over18: Boolean(data.subreddit?.over_18)
     };
@@ -56,7 +61,7 @@ export async function fetchUserComments(username: string): Promise<RedditComment
   if (!clean || clean === '[deleted]') return [];
 
   return requestQueue.enqueue(async () => {
-    const url = `https://www.reddit.com/user/${encodeURIComponent(clean)}/comments.json?limit=25`;
+    const url = `https://www.reddit.com/user/${encodeURIComponent(clean)}/comments.json?limit=100`;
     const res = await fetch(url, {
       headers: {
         'Accept': 'application/json'
@@ -73,13 +78,13 @@ export async function fetchUserComments(username: string): Promise<RedditComment
     const children = json?.data?.children;
     if (!Array.isArray(children)) return [];
 
-    return children.map((c: any) => ({
-      id: c.data.id || '',
-      linkId: c.data.link_id || '',
-      subreddit: c.data.subreddit || '',
-      createdUtc: c.data.created_utc || 0,
-      body: c.data.body || '',
-      score: c.data.score || 0
+    return children.map((c: { data?: Record<string, unknown> }) => ({
+      id: typeof c.data?.id === 'string' ? c.data.id : '',
+      linkId: typeof c.data?.link_id === 'string' ? c.data.link_id : '',
+      subreddit: typeof c.data?.subreddit === 'string' ? c.data.subreddit : '',
+      createdUtc: typeof c.data?.created_utc === 'number' ? c.data.created_utc : 0,
+      body: typeof c.data?.body === 'string' ? c.data.body : '',
+      score: typeof c.data?.score === 'number' ? c.data.score : 0
     }));
   });
 }
@@ -123,11 +128,7 @@ export async function searchSubredditHistoricalPosts(
       // Check if this post is older than 180 days and has significant karma (> 500)
       const ageSec = nowUtc - p.created_utc;
       if (ageSec > ONE_HUNDRED_EIGHTY_DAYS_SEC && p.score > 500) {
-        // Compare titles normalized
-        const normExisting = (p.title || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
-        const normCurrent = cleanTitle.toLowerCase().replace(/[^\w\s]/g, '').trim();
-
-        if (normExisting === normCurrent || normExisting.includes(normCurrent) || normCurrent.includes(normExisting)) {
+        if (isDuplicateTitle(cleanTitle, p.title || '')) {
           return {
             id: p.id,
             title: p.title,
@@ -151,7 +152,7 @@ export async function fetchHistoricalTopComments(postId: string): Promise<string
   if (!cleanId) return [];
 
   return requestQueue.enqueue(async () => {
-    const url = `https://www.reddit.com/comments/${encodeURIComponent(cleanId)}.json?limit=25&depth=1`;
+    const url = `https://www.reddit.com/comments/${encodeURIComponent(cleanId)}.json?limit=50&depth=2`;
     const res = await fetch(url, {
       headers: {
         'Accept': 'application/json'
@@ -166,8 +167,23 @@ export async function fetchHistoricalTopComments(postId: string): Promise<string
     const commentListing = json[1]?.data?.children;
     if (!Array.isArray(commentListing)) return [];
 
-    return commentListing
-      .map((c: any) => c.data?.body)
-      .filter((body: any): body is string => typeof body === 'string' && body.trim().length > 10);
+    const bodies: string[] = [];
+    for (const c of commentListing) {
+      const body = c?.data?.body;
+      if (typeof body === 'string' && body.trim().length >= 20) {
+        bodies.push(body);
+      }
+      const replies = c?.data?.replies?.data?.children;
+      if (Array.isArray(replies)) {
+        for (const r of replies) {
+          const rBody = r?.data?.body;
+          if (typeof rBody === 'string' && rBody.trim().length >= 20) {
+            bodies.push(rBody);
+          }
+        }
+      }
+    }
+
+    return bodies;
   });
 }

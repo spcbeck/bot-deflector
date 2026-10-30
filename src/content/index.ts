@@ -1,5 +1,9 @@
 import { DeflectorClient, ExtensionBackendClient } from '../core/client';
-import { evaluateMerchSpam, evaluateUnescapedEntities } from '../engine/heuristics';
+import {
+  evaluateMerchSpam,
+  evaluateUnescapedEntities,
+  isStolenCommentMatch
+} from '../engine/heuristics';
 import { ExtensionSettings, ScoredUser } from '../types';
 import { RedditAdapter, RedditCommentElement } from './adapters/base';
 import { OldRedditAdapter } from './adapters/oldReddit';
@@ -14,6 +18,7 @@ export class ContentOrchestrator {
   private processedCommentIds = new Set<string>();
   private activeSettings: ExtensionSettings | null = null;
   private isScanning = false;
+  private pendingRescan = false;
   private lastUrl = typeof location !== 'undefined' ? location.pathname + location.search : '';
 
   constructor(client: DeflectorClient = new ExtensionBackendClient()) {
@@ -67,7 +72,15 @@ export class ContentOrchestrator {
 
     window.addEventListener('popstate', () => this.checkRouteUrl());
 
-    // Patch pushState and replaceState to detect programmatic client-side navigation
+    // Modern Navigation API fires across Content Script Isolated Worlds on host pushState/replaceState
+    const nav = (window as unknown as { navigation?: EventTarget }).navigation;
+    if (nav && typeof nav.addEventListener === 'function') {
+      nav.addEventListener('navigate', () => {
+        window.setTimeout(() => this.checkRouteUrl(), 50);
+      });
+    }
+
+    // Patch pushState and replaceState (effective in userscript context)
     const origPush = history.pushState;
     history.pushState = (...args) => {
       origPush.apply(history, args);
@@ -79,6 +92,9 @@ export class ContentOrchestrator {
       origReplace.apply(history, args);
       this.checkRouteUrl();
     };
+
+    // Lightweight fallback poll for isolated world browsers without Navigation API
+    window.setInterval(() => this.checkRouteUrl(), 1000);
   }
 
   private checkRouteUrl(): void {
@@ -97,7 +113,7 @@ export class ContentOrchestrator {
     this.processedCommentIds.clear();
 
     // Re-evaluate the new submission and trigger scanning
-    this.evaluateSubmission();
+    void this.evaluateSubmission();
     this.debouncedScan();
   }
 
@@ -105,7 +121,7 @@ export class ContentOrchestrator {
   private debouncedScan(): void {
     if (this.debounceTimer) window.clearTimeout(this.debounceTimer);
     this.debounceTimer = window.setTimeout(() => {
-      this.scanComments();
+      void this.scanComments();
     }, 400);
   }
 
@@ -148,6 +164,8 @@ export class ContentOrchestrator {
         };
         this.adapter.injectSubmissionWarning(sub, res.originalPost, opScored);
         this.client.recordDeflection(opScored).catch(() => {});
+      } else if (res?.opScored?.classification === 'DEFLECT') {
+        this.client.recordDeflection(res.opScored).catch(() => {});
       }
     } catch (err) {
       console.warn('[BotDeflector] Submission check error:', err);
@@ -155,7 +173,11 @@ export class ContentOrchestrator {
   }
 
   private async scanComments(): Promise<void> {
-    if (!this.adapter || this.isScanning) return;
+    if (!this.adapter) return;
+    if (this.isScanning) {
+      this.pendingRescan = true;
+      return;
+    }
     this.isScanning = true;
 
     try {
@@ -171,7 +193,6 @@ export class ContentOrchestrator {
       }
 
       if (newComments.length === 0) {
-        this.isScanning = false;
         return;
       }
 
@@ -217,7 +238,6 @@ export class ContentOrchestrator {
       // Batch query usernames to backend
       const usernames = Array.from(new Set(remainingComments.map((c) => c.author)));
       if (usernames.length === 0) {
-        this.isScanning = false;
         return;
       }
 
@@ -225,6 +245,10 @@ export class ContentOrchestrator {
       this.applyScoredResults(remainingComments, scoredMap);
     } finally {
       this.isScanning = false;
+      if (this.pendingRescan) {
+        this.pendingRescan = false;
+        void this.scanComments();
+      }
     }
   }
 
@@ -238,17 +262,19 @@ export class ContentOrchestrator {
       if (!scored) continue;
 
       // Local Heuristic Veto:
-      // Even if account passed heuristics previously (cached CLEAN),
-      // check current comment for hard scraper artifacts or merch links
+      // Even if account scored CLEAN or FLAG on profile metadata alone,
+      // check current comment body for hard scraper artifacts or merch spam links
       const unescapedHit = evaluateUnescapedEntities(c.bodyText);
       const merchHit = evaluateMerchSpam(c.bodyText);
 
-      if (scored.classification === 'CLEAN' && (unescapedHit || merchHit)) {
+      if (scored.classification !== 'DEFLECT' && (unescapedHit || merchHit)) {
         const hits = [unescapedHit, merchHit].filter(Boolean) as NonNullable<typeof unescapedHit>[];
+        const addedPoints = hits.reduce((sum, h) => sum + h.points, 0);
+        const threshold = this.activeSettings?.deflectThreshold ?? 70;
         this.client.invalidateUser(c.author).catch(() => {});
         scored = {
           ...scored,
-          score: Math.max(scored.score, 75),
+          score: Math.min(100, Math.max(scored.score + addedPoints, threshold)),
           classification: 'DEFLECT',
           breakdown: [...scored.breakdown, ...hits]
         };
@@ -271,12 +297,8 @@ export class ContentOrchestrator {
 
   private isAccompliceStolenComment(bodyText: string): boolean {
     if (!bodyText || this.historicalTopComments.length === 0) return false;
-    const cleanCurrent = bodyText.toLowerCase().replace(/[^\w\s]/g, '').trim();
-    if (cleanCurrent.length < 20) return false;
-
     for (const hist of this.historicalTopComments) {
-      const cleanHist = hist.toLowerCase().replace(/[^\w\s]/g, '').trim();
-      if (cleanCurrent === cleanHist || cleanHist.includes(cleanCurrent) || cleanCurrent.includes(cleanHist)) {
+      if (isStolenCommentMatch(bodyText, hist)) {
         return true;
       }
     }

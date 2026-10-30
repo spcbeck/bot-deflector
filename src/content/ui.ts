@@ -4,7 +4,7 @@ export function createDeflectionBar(
   scored: ScoredUser,
   onRestore: () => void,
   onWhitelist: () => void,
-  onBlock?: () => void
+  onBlock?: () => Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }> | void
 ): HTMLElement {
   const container = document.createElement('div');
   container.className = 'bd-deflection-bar';
@@ -55,13 +55,23 @@ export function createDeflectionBar(
     blockBtn.style.color = '#FF8A80';
     blockBtn.textContent = 'Block on Reddit';
     blockBtn.title = 'Permanently block this user on your Reddit account';
-    blockBtn.addEventListener('click', (e) => {
+    blockBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       blockBtn.textContent = 'Blocking...';
       blockBtn.disabled = true;
-      onBlock();
-      blockBtn.textContent = 'Blocked';
-      blockBtn.style.color = '#AAAAAA';
+      try {
+        const res = await onBlock();
+        if (res && typeof res === 'object' && !res.success) {
+          blockBtn.textContent = res.quotaExceeded ? 'Quota Full' : 'Block Failed';
+          blockBtn.disabled = false;
+        } else {
+          blockBtn.textContent = 'Blocked';
+          blockBtn.style.color = '#AAAAAA';
+        }
+      } catch {
+        blockBtn.textContent = 'Block Failed';
+        blockBtn.disabled = false;
+      }
     });
     actions.appendChild(blockBtn);
   }
@@ -111,7 +121,7 @@ export function createSubmissionRepostBanner(
 
   const author = document.createElement('span');
   author.className = 'bd-user-label';
-  author.textContent = `OP u/${originalPost.author} suspected bot`;
+  author.textContent = `OP u/${opScored.username} suspected bot`;
 
   header.appendChild(badge);
   header.appendChild(author);
@@ -125,7 +135,7 @@ export function createSubmissionRepostBanner(
   titlePrefix.textContent = 'Exact Historical Title Repost Detected: ';
   body.appendChild(titlePrefix);
 
-  body.appendChild(document.createTextNode('Original post from '));
+  body.appendChild(document.createTextNode(`Original post by u/${originalPost.author} from `));
 
   const dateStrong = document.createElement('strong');
   dateStrong.textContent = createdDate;

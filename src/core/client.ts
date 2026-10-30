@@ -8,11 +8,12 @@ import {
   fetchUserProfile,
   searchSubredditHistoricalPosts
 } from '../background/fetcher';
-import { scoreUser } from '../engine/scorer';
+import { scoreUser, shouldDrilldownComments } from '../engine/scorer';
 import {
   BackgroundMessage,
   BackgroundResponse,
   ExtensionSettings,
+  RedditCommentActivity,
   RedditSubmission,
   ScoredUser
 } from '../types';
@@ -142,6 +143,7 @@ function setStoredValue<T>(key: string, value: T): void {
 
 export class UserscriptBackendClient implements DeflectorClient {
   private settings: ExtensionSettings = getStoredValue(USERSCRIPT_SETTINGS_KEY, DEFAULT_SETTINGS);
+  private evaluatedListeners = new Set<(users: Record<string, ScoredUser>) => void>();
 
   async getSettings(): Promise<ExtensionSettings> {
     this.settings = getStoredValue(USERSCRIPT_SETTINGS_KEY, DEFAULT_SETTINGS);
@@ -161,7 +163,7 @@ export class UserscriptBackendClient implements DeflectorClient {
   }
 
   async invalidateUser(username: string): Promise<void> {
-    const key = USERSCRIPT_CACHE_PREFIX + username.toLowerCase();
+    const key = USERSCRIPT_CACHE_PREFIX + username.toLowerCase().replace(/^u\//, '');
     try {
       if (typeof GM_setValue === 'function') {
         GM_setValue(key, null);
@@ -175,8 +177,20 @@ export class UserscriptBackendClient implements DeflectorClient {
     this.setCachedUser(scored);
   }
 
-  onUsersEvaluated(_callback: (users: Record<string, ScoredUser>) => void): () => void {
-    return () => {};
+  onUsersEvaluated(callback: (users: Record<string, ScoredUser>) => void): () => void {
+    this.evaluatedListeners.add(callback);
+    return () => {
+      this.evaluatedListeners.delete(callback);
+    };
+  }
+
+  private emitEvaluated(users: Record<string, ScoredUser>): void {
+    if (Object.keys(users).length === 0) return;
+    for (const cb of this.evaluatedListeners) {
+      try {
+        cb(users);
+      } catch {}
+    }
   }
 
   async checkSubmission(data: { title: string; subreddit: string; author: string }): Promise<{
@@ -189,7 +203,10 @@ export class UserscriptBackendClient implements DeflectorClient {
       return { isRepost: false };
     }
 
-    const historicalPost = await searchSubredditHistoricalPosts(data.subreddit, data.title);
+    const [historicalPost, opProfile] = await Promise.all([
+      searchSubredditHistoricalPosts(data.subreddit, data.title),
+      fetchUserProfile(data.author).catch(() => null)
+    ]);
     let topComments: string[] = [];
 
     if (historicalPost) {
@@ -198,11 +215,12 @@ export class UserscriptBackendClient implements DeflectorClient {
 
     const opScored = scoreUser(
       data.author,
-      undefined,
+      opProfile || undefined,
       undefined,
       undefined,
       data.title,
       {
+        isOp: true,
         isExactTitleRepost: Boolean(historicalPost),
         deflectThreshold: this.settings.deflectThreshold,
         flagThreshold: this.settings.flagThreshold,
@@ -223,7 +241,7 @@ export class UserscriptBackendClient implements DeflectorClient {
     const uncached: string[] = [];
 
     for (const rawName of usernames) {
-      const clean = rawName.replace(/^u\//, '').trim();
+      const clean = rawName.replace(/^u\//, '').trim().toLowerCase();
       if (!clean || clean === '[deleted]') continue;
 
       const cached = this.getCachedUser(clean);
@@ -234,21 +252,21 @@ export class UserscriptBackendClient implements DeflectorClient {
       }
     }
 
-    for (const username of uncached) {
+    if (uncached.length > 0) {
+      void this.evaluateUncachedUsers(uncached);
+    }
+
+    return results;
+  }
+
+  private async evaluateUncachedUsers(usernames: string[]): Promise<void> {
+    for (const username of usernames) {
       try {
         const profile = await fetchUserProfile(username);
-        let comments: any[] = [];
+        let comments: RedditCommentActivity[] = [];
 
-        if (profile) {
-          const ageDays = (Date.now() / 1000 - profile.createdUtc) / 86400;
-          const isSuspiciousProfile =
-            (ageDays >= 60 && ageDays <= 1000 && profile.totalKarma < 150) ||
-            (profile.linkKarma > 5000 && profile.commentKarma < 30) ||
-            profile.totalKarma < 0;
-
-          if (isSuspiciousProfile && this.settings.enableCadenceCheck) {
-            comments = await fetchUserComments(username);
-          }
+        if (profile && this.settings.enableCadenceCheck && shouldDrilldownComments(username, profile, this.settings.whitelist)) {
+          comments = await fetchUserComments(username);
         }
 
         const scored = scoreUser(
@@ -272,13 +290,11 @@ export class UserscriptBackendClient implements DeflectorClient {
         }
 
         this.setCachedUser(scored);
-        results[username] = scored;
+        this.emitEvaluated({ [username.toLowerCase()]: scored });
       } catch (err) {
         console.warn(`[BotDeflector Userscript] Could not evaluate ${username}:`, err);
       }
     }
-
-    return results;
   }
 
   private getCachedUser(username: string): ScoredUser | null {

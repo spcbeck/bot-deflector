@@ -59,7 +59,7 @@ export class ShredditAdapter implements RedditAdapter {
     scored: ScoredUser,
     onRestore: () => void,
     onWhitelist?: () => void,
-    onBlock?: () => void
+    onBlock?: () => Promise<{ success: boolean; quotaExceeded?: boolean; error?: string }> | void
   ): void {
     const el = comment.element;
     el.dataset.bdProcessed = 'true';
@@ -94,17 +94,25 @@ export class ShredditAdapter implements RedditAdapter {
 
   observe(callback: () => void): MutationObserver {
     const observer = new MutationObserver((mutations) => {
-      let hasNewComments = false;
+      let hasRelevantChanges = false;
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
-          if (node instanceof HTMLElement && (node.tagName.toLowerCase() === 'shreddit-comment' || node.querySelector('shreddit-comment'))) {
-            hasNewComments = true;
-            break;
+          if (node instanceof HTMLElement) {
+            const tag = node.tagName.toLowerCase();
+            if (
+              tag === 'shreddit-comment' ||
+              tag === 'shreddit-post' ||
+              tag === 'shreddit-comment-tree' ||
+              node.querySelector('shreddit-comment, shreddit-post')
+            ) {
+              hasRelevantChanges = true;
+              break;
+            }
           }
         }
-        if (hasNewComments) break;
+        if (hasRelevantChanges) break;
       }
-      if (hasNewComments) {
+      if (hasRelevantChanges) {
         callback();
       }
     });
